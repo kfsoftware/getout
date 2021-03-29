@@ -125,7 +125,7 @@ func (c *serverCmd) run() error {
 func NewServerCmd() *cobra.Command {
 	c := &serverCmd{}
 	cmd := &cobra.Command{
-		Use: "client",
+		Use: "server",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := c.validate(); err != nil {
 				return err
