@@ -14,6 +14,7 @@ type clientCmd struct {
 	sni    string
 	port   int
 	tunnel string
+	host   string
 }
 
 func (c *clientCmd) validate() error {
@@ -48,7 +49,7 @@ func (c *clientCmd) run() error {
 			log.Tracef("Failed to accept connections: %v", err)
 			return err
 		}
-		destConn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", c.port))
+		destConn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", c.host, c.port))
 		if err != nil {
 			panic(err)
 		}
@@ -82,6 +83,7 @@ func NewClientCmd() *cobra.Command {
 	persistentFlags.StringVarP(&c.sni, "sni", "", "", "SNI Host to listen for")
 	persistentFlags.StringVarP(&c.tunnel, "tunnel", "", "tunnel.arise.kungfusoftware.es:8082", "Tunnel to connect to")
 	persistentFlags.IntVarP(&c.port, "port", "", 0, "Local port to redirect to")
+	persistentFlags.StringVarP(&c.host, "host", "", "localhost", "Local host to redirect to")
 
 	cmd.MarkPersistentFlagRequired("sni")
 	cmd.MarkPersistentFlagRequired("port")
