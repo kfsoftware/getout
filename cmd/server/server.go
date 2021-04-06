@@ -16,7 +16,6 @@ import (
 type serverCmd struct {
 	tunnelAddr string
 	addr       string
-
 }
 
 func (c *serverCmd) validate() error {
@@ -33,22 +32,24 @@ func (c *serverCmd) run() error {
 		panic(fmt.Errorf("error listening on %s: %w", c.tunnelAddr, err))
 	}
 	defer muxServer.Close()
-	var sessions []*Session
+	var sessions map[string]*Session
 	go func() {
 		for {
 			conn, err := muxServer.Accept()
 			if err != nil {
-				log.Warnf("Connection closed")
-				return
+				log.Warnf("Couldn't accept the connection: %v", err)
+				continue
 			}
 			log.Debugf("client %s connected", conn.RemoteAddr().String())
 			sess, err := yamux.Server(conn, nil)
 			if err != nil {
-				panic(err)
+				log.Warnf("Couldn't setup yamux server: %v", err)
+				continue
 			}
 			initialConn, err := sess.Accept()
 			if err != nil {
-				panic(err)
+				log.Warnf("Failed to accept connection: %v", err)
+				continue
 			}
 			var sz int64
 			err = binary.Read(initialConn, binary.LittleEndian, &sz)
@@ -56,12 +57,15 @@ func (c *serverCmd) run() error {
 			n, err := initialConn.Read(sni)
 			log.Debugf("Read message %s %d", sni, n)
 			if err != nil {
-				panic(err)
+				log.Warnf("Failed to read initial connection: %v", err)
+				continue
 			}
-			sessions = append(sessions, &Session{
+
+			session := &Session{
 				sni:  string(sni),
 				sess: sess,
-			})
+			}
+			sessions[string(sni)] = session
 		}
 	}()
 	for {
@@ -81,21 +85,17 @@ func (c *serverCmd) run() error {
 			conn.Close()
 			continue
 		}
-		var destSess *Session
-		for _, session := range sessions {
-			if session.sni == sni {
-				destSess = session
-			}
-		}
-		if destSess == nil {
+		session, exists := sessions[sni]
+
+		if !exists {
 			log.Warnf("Session not found")
 			conn.Close()
 			continue
 		}
-		destConn, err := destSess.sess.Open()
+		destConn, err := session.sess.Open()
 		if err != nil {
 			conn.Close()
-			sessions = RemoveIndex(sessions, 0)
+			delete(sessions, sni)
 			log.Warnf("Connection closed")
 			continue
 		}

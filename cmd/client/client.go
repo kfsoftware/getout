@@ -79,6 +79,7 @@ func NewClientCmd() *cobra.Command {
 			return c.run()
 		},
 	}
+	cmd.AddCommand(newHttpCmd(), newTlsCmd())
 	persistentFlags := cmd.PersistentFlags()
 	persistentFlags.StringVarP(&c.sni, "sni", "", "", "SNI Host to listen for")
 	persistentFlags.StringVarP(&c.tunnel, "tunnel", "", "tunnel.arise.kungfusoftware.es:8082", "Tunnel to connect to")

@@ -1,0 +1,35 @@
+syntax = "proto3";
+package tutorial;
+
+import "google/protobuf/timestamp.proto";
+option go_package = "pkg/messages";
+enum Protocol {
+  TCP = 0;
+  HTTP = 1;
+}
+message TunnelRequest {
+  oneof req {
+    TlsTunnelRequest tls = 1;
+    HttpTunnelRequest http = 2;
+  }
+}
+
+message TlsTunnelRequest {
+  string sni = 1;
+}
+message HttpTunnelRequest {
+  string host = 1;
+}
+message TlsTunnel {
+  string sni = 1;
+}
+
+message HttpTunnel {
+  string host = 1;
+}
+
+message Auth {
+  string user = 1;
+  string password = 2;
+  map<string, string> metadata = 3;
+}
