@@ -4,10 +4,10 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"github.com/golang/protobuf/proto"
+	uuid "github.com/google/uuid"
 	"github.com/hashicorp/yamux"
 	"github.com/kfsoftware/getout/pkg/db"
 	"github.com/kfsoftware/getout/pkg/messages"
-	uuid "github.com/satori/go.uuid"
 	log "github.com/schollz/logger"
 	"gorm.io/gorm"
 	"net"
@@ -94,7 +94,7 @@ func (r *TunnelRegistry) StoreSession(
 }
 func (r *TunnelRegistry) saveSession(conn net.Conn, url string, protocol db.Protocol) (*db.Tunnel, error) {
 	tunnel := &db.Tunnel{
-		ID:       uuid.NewV4().String(),
+		ID:       uuid.NewString(),
 		URL:      url,
 		ClientIP: conn.RemoteAddr().String(),
 		Protocol: protocol,

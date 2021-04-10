@@ -10,4 +10,5 @@ require (
 	google.golang.org/protobuf v1.26.0
 	gorm.io/datatypes v1.0.0
 	gorm.io/gorm v1.21.6
+	github.com/google/uuid v1.2.0
 )
