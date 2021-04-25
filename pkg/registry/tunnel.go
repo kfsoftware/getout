@@ -15,11 +15,12 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type TunnelRegistry struct {
-	tlsTunnels   []*TlsTunnel
-	httpsTunnels []*HttpsTunnel
+	tlsTunnels   map[string]*TlsTunnel
+	httpsTunnels map[string]*HttpsTunnel
 	db           *gorm.DB
 }
 type Protocol string
@@ -35,8 +36,9 @@ type Tunnel interface {
 }
 
 type HttpsTunnel struct {
-	host string
-	sess *yamux.Session
+	tunnel *db.Tunnel
+	host   string
+	sess   *yamux.Session
 }
 
 func (t *HttpsTunnel) Match(req http.Header) bool {
@@ -48,8 +50,9 @@ func (t *HttpsTunnel) GetSession() *yamux.Session {
 }
 
 type TlsTunnel struct {
-	sni  string
-	sess *yamux.Session
+	tunnel *db.Tunnel
+	sni    string
+	sess   *yamux.Session
 }
 
 func (t *TlsTunnel) Match(clientHello *tls.ClientHelloInfo) bool {
@@ -74,18 +77,36 @@ type Session struct {
 
 func NewTunnelRegistry(db *gorm.DB) *TunnelRegistry {
 	return &TunnelRegistry{
-		httpsTunnels: nil,
-		tlsTunnels:   nil,
+		httpsTunnels: map[string]*HttpsTunnel{},
+		tlsTunnels:   map[string]*TlsTunnel{},
 		db:           db,
 	}
 }
+func (r *TunnelRegistry) RemoveSession(tunn *db.Tunnel) error {
+	tunn.Active = false
+	tunn.DeletedAt = gorm.DeletedAt{
+		Time:  time.Now(),
+		Valid: true,
+	}
+	result := r.db.Save(tunn)
+	if result.Error != nil {
+		return result.Error
+	}
+	switch tunn.Protocol {
+	case db.TlsProtocol:
+		r.removeTlsTunnel(tunn)
+	case db.HttpProtocol:
+		r.removeHttpTunnel(tunn)
+	}
+	return nil
+}
 func (r *TunnelRegistry) StoreSession(
 	sess *yamux.Session,
-) error {
+) (*db.Tunnel, error) {
 	initialConn, err := sess.Accept()
 	if err != nil {
 		log.Warnf("Failed to accept connection: %v", err)
-		return err
+		return nil, err
 	}
 	defer initialConn.Close()
 	var sz int64
@@ -95,12 +116,12 @@ func (r *TunnelRegistry) StoreSession(
 	log.Debugf("Read message %s %d", reqBytes, n)
 	if err != nil {
 		log.Warnf("Failed to read initial connection: %v", err)
-		return err
+		return nil, err
 	}
 	tunnelReq := &messages.TunnelRequest{}
 	err = proto.Unmarshal(reqBytes, tunnelReq)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var url string
 	var protocol db.Protocol
@@ -108,26 +129,38 @@ func (r *TunnelRegistry) StoreSession(
 		protocol = db.TlsProtocol
 		url = tunnelReq.GetTls().GetSni()
 		log.Infof("Received tls tunnel request %s", url)
+	} else if tunnelReq.GetHttp() != nil {
+		log.Infof("Received http tunnel request host=%s", tunnelReq.GetHttp().Host)
+		protocol = db.HttpProtocol
+		url = tunnelReq.GetHttp().GetHost()
+	}
+	tunn, err := r.saveSession(initialConn, url, protocol)
+	if err != nil {
+		return nil, err
+	}
+
+	if tunnelReq.GetTls() != nil {
+		protocol = db.TlsProtocol
+		url = tunnelReq.GetTls().GetSni()
 		tlsTunnel := &TlsTunnel{
-			sni:  url,
-			sess: sess,
+			sni:    url,
+			sess:   sess,
+			tunnel: tunn,
 		}
-		r.tlsTunnels = append(r.tlsTunnels, tlsTunnel)
+		r.tlsTunnels[tunn.ID] = tlsTunnel
 	} else if tunnelReq.GetHttp() != nil {
 		log.Infof("Received http tunnel request host=%s", tunnelReq.GetHttp().Host)
 		protocol = db.HttpProtocol
 		url = tunnelReq.GetHttp().GetHost()
 		httpsTunnel := &HttpsTunnel{
-			host: url,
-			sess: sess,
+			host:   url,
+			sess:   sess,
+			tunnel: tunn,
 		}
-		r.httpsTunnels = append(r.httpsTunnels, httpsTunnel)
+		r.httpsTunnels[tunn.ID] = httpsTunnel
 	}
-	_, err = r.saveSession(initialConn, url, protocol)
-	if err != nil {
-		return err
-	}
-	return nil
+
+	return tunn, nil
 }
 func (r *TunnelRegistry) saveSession(conn net.Conn, url string, protocol db.Protocol) (*db.Tunnel, error) {
 	tunnel := &db.Tunnel{
@@ -145,6 +178,9 @@ func (r *TunnelRegistry) saveSession(conn net.Conn, url string, protocol db.Prot
 	}
 	return tunnel, nil
 }
+func (r *TunnelRegistry) RegisterEvent() {
+
+}
 
 type TunnelCtx struct {
 	DestConn        net.Conn
@@ -153,38 +189,49 @@ type TunnelCtx struct {
 	ClientHelloInfo *tls.ClientHelloInfo
 }
 
-func (r *TunnelRegistry) GetTLSSession(clientHello *tls.ClientHelloInfo) (*yamux.Session, error) {
+func (r *TunnelRegistry) GetTLSSession(clientHello *tls.ClientHelloInfo) (*yamux.Session, *db.Tunnel, error) {
 	var sess *yamux.Session
-	for _, tunnel := range r.tlsTunnels {
-		if exists := tunnel.Match(
+	var tunn *db.Tunnel
+	for _, tlsTunnel := range r.tlsTunnels {
+		if exists := tlsTunnel.Match(
 			clientHello,
 		); exists {
-			sess = tunnel.GetSession()
+			tunn = tlsTunnel.tunnel
+			sess = tlsTunnel.GetSession()
 			break
 		}
 	}
 	if sess == nil {
 		log.Warnf("Tunnel not found")
-		return nil, errors.Errorf("No tunnel found")
+		return nil, nil, errors.Errorf("No tlsTunnel found")
 	}
 
-	return sess, nil
+	return sess, tunn, nil
 }
 
-func (r *TunnelRegistry) GetHttpSession(req http.Header) (*yamux.Session, error) {
+func (r *TunnelRegistry) GetHttpSession(req http.Header) (*yamux.Session, *db.Tunnel, error) {
 	var sess *yamux.Session
-	for _, tunnel := range r.httpsTunnels {
-		if exists := tunnel.Match(
+	var tunn *db.Tunnel
+	for _, httpsTunnel := range r.httpsTunnels {
+		if exists := httpsTunnel.Match(
 			req,
 		); exists {
-			sess = tunnel.GetSession()
+			tunn = httpsTunnel.tunnel
+			sess = httpsTunnel.GetSession()
 			break
 		}
 	}
 	if sess == nil {
 		log.Warnf("Tunnel not found")
-		return nil, errors.Errorf("No tunnel found")
+		return nil, nil, errors.Errorf("No httpsTunnel found")
 	}
 
-	return sess, nil
+	return sess, tunn, nil
+}
+
+func (r *TunnelRegistry) removeHttpTunnel(tunn *db.Tunnel) {
+	delete(r.httpsTunnels, tunn.ID)
+}
+func (r *TunnelRegistry) removeTlsTunnel(tunn *db.Tunnel) {
+	delete(r.tlsTunnels, tunn.ID)
 }

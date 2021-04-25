@@ -260,19 +260,19 @@ func TestTls(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		err = tunnelRegistry.StoreSession(server)
+		_, err = tunnelRegistry.StoreSession(server)
 		if err != nil {
 			t.Fatalf("Err: %v", err)
 		}
 	}()
 	tunnelCli := tunnelClient{sess: client, address: cfg.Address}
-	err = tunnelCli.startTlsTunnel("localhost")
+	err = tunnelCli.StartTlsTunnel("localhost")
 	if err != nil {
 		t.Fatalf("Err: %v", err)
 	}
 	go func() {
 		wg.Done()
-		tunnelCli.startListenServer()
+		tunnelCli.Start()
 	}()
 	wg.Wait()
 	mainServerAddr := incList.Addr().String()
@@ -326,7 +326,7 @@ func TestHttp(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		err = tunnelRegistry.StoreSession(server)
+		_, err = tunnelRegistry.StoreSession(server)
 		if err != nil {
 			t.Fatalf("Err: %v", err)
 		}
@@ -336,13 +336,13 @@ func TestHttp(t *testing.T) {
 		t.Fatalf("Err: %v", err)
 	}
 	tunnelCli := tunnelClient{sess: client, address: u.Host}
-	err = tunnelCli.startHttpTunnel("localhost")
+	err = tunnelCli.StartHttpTunnel("localhost")
 	if err != nil {
 		t.Fatalf("Err: %v", err)
 	}
 	go func() {
 		wg.Done()
-		tunnelCli.startListenServer()
+		tunnelCli.Start()
 	}()
 	wg.Wait()
 	mainServerAddr := incList.Addr().String()
@@ -398,7 +398,7 @@ func TestHttps(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		err = tunnelRegistry.StoreSession(server)
+		_, err = tunnelRegistry.StoreSession(server)
 		if err != nil {
 			t.Fatalf("Err: %v", err)
 		}
@@ -408,13 +408,13 @@ func TestHttps(t *testing.T) {
 		t.Fatalf("Err: %v", err)
 	}
 	tunnelCli := tunnelClient{sess: client, address: u.Host}
-	err = tunnelCli.startHttpTunnel("localhost")
+	err = tunnelCli.StartHttpTunnel("localhost")
 	if err != nil {
 		t.Fatalf("Err: %v", err)
 	}
 	go func() {
 		wg.Done()
-		tunnelCli.startListenServer()
+		tunnelCli.Start()
 	}()
 	wg.Wait()
 	mainServerAddr := incList.Addr().String()
@@ -479,7 +479,7 @@ func benchmarkHttps(n int, b *testing.B) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		err = tunnelRegistry.StoreSession(server)
+		_, err = tunnelRegistry.StoreSession(server)
 		if err != nil {
 			b.Fatalf("Err: %v", err)
 		}
@@ -489,13 +489,13 @@ func benchmarkHttps(n int, b *testing.B) {
 		b.Fatalf("Err: %v", err)
 	}
 	tunnelCli := tunnelClient{sess: client, address: u.Host}
-	err = tunnelCli.startHttpTunnel("localhost")
+	err = tunnelCli.StartHttpTunnel("localhost")
 	if err != nil {
 		b.Fatalf("Err: %v", err)
 	}
 	go func() {
 		wg.Done()
-		tunnelCli.startListenServer()
+		tunnelCli.Start()
 	}()
 	wg.Wait()
 	mainServerAddr := incList.Addr().String()
@@ -530,13 +530,6 @@ func benchmarkHttps(n int, b *testing.B) {
 		}
 	}
 
-}
-
-func BenchmarkTest(b *testing.B) {
-	log.Debug(fmt.Sprintf("Benchmarking %d", b.N))
-	for i := 0; i < b.N; i++ {
-		time.Sleep(1 * time.Second)
-	}
 }
 
 func BenchmarkHttps40(b *testing.B) {

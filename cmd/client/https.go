@@ -9,17 +9,17 @@ import (
 	"time"
 )
 
-type httpClientCmd struct {
+type httpsClientCmd struct {
 	host    string
 	port    int
 	tunnel  string
 	address string
 }
 
-func (h *httpClientCmd) validate() error {
+func (h *httpsClientCmd) validate() error {
 	return nil
 }
-func (h *httpClientCmd) startServer() error {
+func (h *httpsClientCmd) startServer() error {
 	conn, err := net.Dial("tcp", h.tunnel)
 	if err != nil {
 		panic(err)
@@ -42,7 +42,7 @@ func (h *httpClientCmd) startServer() error {
 	}
 	return nil
 }
-func (h *httpClientCmd) run() error {
+func (h *httpsClientCmd) run() error {
 	attempts := 0
 	retryInterval := 5 * time.Second
 	for {
@@ -54,10 +54,10 @@ func (h *httpClientCmd) run() error {
 		}
 	}
 }
-func newHttpCmd() *cobra.Command {
-	c := &httpClientCmd{}
+func newHttpsCmd() *cobra.Command {
+	c := &httpsClientCmd{}
 	cmd := &cobra.Command{
-		Use: "http",
+		Use: "https",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := c.validate(); err != nil {
 				return err

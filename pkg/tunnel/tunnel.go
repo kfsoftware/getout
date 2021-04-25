@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/golang/protobuf/proto"
 	"github.com/hashicorp/yamux"
+	"github.com/kfsoftware/getout/pkg/db"
 	"github.com/kfsoftware/getout/pkg/messages"
 	"github.com/kfsoftware/getout/pkg/registry"
 	"github.com/pires/go-proxyproto"
@@ -17,6 +18,8 @@ import (
 	"net"
 	"net/http"
 	"net/textproto"
+	"sync"
+	"time"
 )
 
 type tunnelClient struct {
@@ -24,7 +27,16 @@ type tunnelClient struct {
 	address string
 }
 
-func (c *tunnelClient) startHttpTunnel(host string) error {
+func NewTunnelClient(
+	sess *yamux.Session,
+	localAddress string,
+) *tunnelClient {
+	return &tunnelClient{
+		sess:    sess,
+		address: localAddress,
+	}
+}
+func (c *tunnelClient) StartHttpTunnel(host string) error {
 	tunnelReq := &messages.TunnelRequest{
 		Req: &messages.TunnelRequest_Http{
 			Http: &messages.HttpTunnelRequest{
@@ -43,7 +55,7 @@ func (c *tunnelClient) startHttpTunnel(host string) error {
 	}
 	err = binary.Write(conn, binary.LittleEndian, int64(len(b)))
 	if err != nil {
-		panic(err)
+		return err
 	}
 	if _, err = conn.Write(b); err != nil {
 		return err
@@ -51,7 +63,7 @@ func (c *tunnelClient) startHttpTunnel(host string) error {
 	return nil
 }
 
-func (c *tunnelClient) startTlsTunnel(sni string) error {
+func (c *tunnelClient) StartTlsTunnel(sni string) error {
 	tunnelReq := &messages.TunnelRequest{
 		Req: &messages.TunnelRequest_Tls{
 			Tls: &messages.TlsTunnelRequest{
@@ -70,7 +82,7 @@ func (c *tunnelClient) startTlsTunnel(sni string) error {
 	}
 	err = binary.Write(conn, binary.LittleEndian, int64(len(b)))
 	if err != nil {
-		panic(err)
+		return err
 	}
 	if _, err = conn.Write(b); err != nil {
 		return err
@@ -78,16 +90,16 @@ func (c *tunnelClient) startTlsTunnel(sni string) error {
 	return nil
 }
 
-func (c *tunnelClient) startListenServer() error {
+func (c *tunnelClient) Start() error {
 	for {
 		conn, err := c.sess.Accept()
 		if err != nil {
-			log.Tracef("Failed to accept connections: %v", err)
+			log.Warnf("Failed to accept connections: %v", err)
 			return err
 		}
 		destConn, err := net.Dial("tcp", c.address)
 		if err != nil {
-			panic(err)
+			return err
 		}
 		log.Debugf("client %s connected", conn.RemoteAddr().String())
 		copyConn := func(writer, reader net.Conn) {
@@ -103,9 +115,28 @@ func (c *tunnelClient) startListenServer() error {
 		go copyConn(destConn, conn)
 	}
 }
+func NewTunnelServerInstance(
+	registry *registry.TunnelRegistry,
+	tunnelAddress string,
+	listenAddress string,
+	defaultDomain string,
+	certificates []tls.Certificate,
+) *instance {
+	return &instance{
+		registry:      registry,
+		listenAddress: listenAddress,
+		tunnelAddress: tunnelAddress,
+		defaultDomain: defaultDomain,
+		certificates:  certificates,
+	}
+}
 
 type instance struct {
-	registry *registry.TunnelRegistry
+	tunnelAddress string
+	listenAddress string
+	registry      *registry.TunnelRegistry
+	certificates  []tls.Certificate
+	defaultDomain string
 }
 
 // WriteCloser describes a net.Conn with a CloseWrite method.
@@ -117,7 +148,7 @@ type WriteCloser interface {
 	CloseWrite() error
 }
 
-func doProxyTcp(conn net.Conn, sess *yamux.Session) {
+func doProxyTcp(conn net.Conn, tunn *db.Tunnel, sess *yamux.Session) {
 	destConn, err := sess.Open()
 	if err != nil {
 		log.Warnf("Connection closed")
@@ -196,31 +227,33 @@ func writeCloser(conn net.Conn) (WriteCloser, error) {
 	}
 }
 
-func (t *instance) startMainServer(server net.Listener) {
+func (t *instance) startMainServer(server net.Listener) error {
+	log.Infof("Listening for requests on %s", server.Addr().String())
 	for {
 		conn, err := server.Accept()
 		if err != nil {
-			panic(err)
+			return err
 		}
 		log.Debugf("client %s connected", conn.RemoteAddr().String())
 		wc, err := writeCloser(conn)
 		if err != nil {
-			panic(err)
+			return err
 		}
 		br := bufio.NewReader(wc)
 		clientInfo, isTls, peeked, err := peekClientHello(br)
 		c := &Conn{Peeked: peeked, WriteCloser: wc}
 		var sess *yamux.Session
+		var tunn *db.Tunnel
 		log.Debugf("Original isTls=%v clientInfo=%v", isTls, clientInfo)
 		if isTls {
 			log.Debugf("Connection TLS")
-			sess, err = t.registry.GetTLSSession(clientInfo)
+			sess, tunn, err = t.registry.GetTLSSession(clientInfo)
 			if err != nil {
 				// If there's not a session
 				// maybe there's because there's an HTTPS session
 				// we can't close the request at this point
 			} else {
-				doProxyTcp(c, sess)
+				doProxyTcp(c, tunn, sess)
 				continue
 			}
 		} else if !isTls {
@@ -233,26 +266,23 @@ func (t *instance) startMainServer(server net.Listener) {
 			}
 			c = &Conn{Peeked: peeked, WriteCloser: wc}
 			log.Warnf("Connection not TLS")
-			sess, err = t.registry.GetHttpSession(headers)
+			sess, tunn, err = t.registry.GetHttpSession(headers)
 			if err != nil {
 				conn.Close()
 				log.Warnf("Connection closed")
 				continue
 			} else {
-				doProxyTcp(c, sess)
+				doProxyTcp(c, tunn, sess)
 				continue
 			}
 		}
 		if sess == nil && isTls {
 			// it's https
-			crt, err := tls.LoadX509KeyPair("/disco-grande/go/src/github.com/kfsoftware/getout/localhost.pem", "/disco-grande/go/src/github.com/kfsoftware/getout/localhost-key.pem")
-			if err != nil {
-				conn.Close()
-				log.Warnf("Connection closed")
-				continue
-			}
 			server := tls.Server(c, &tls.Config{
-				Certificates: []tls.Certificate{crt},
+				Certificates: t.certificates,
+				NextProtos: []string{
+					"http/2",
+				},
 			})
 			err = server.Handshake()
 			if err != nil {
@@ -262,7 +292,7 @@ func (t *instance) startMainServer(server net.Listener) {
 			}
 			wcTls, err := writeCloser(server)
 			if err != nil {
-				panic(err)
+				return err
 			}
 			br := bufio.NewReader(wcTls)
 			peekedBytes := new(bytes.Buffer)
@@ -273,19 +303,51 @@ func (t *instance) startMainServer(server net.Listener) {
 				log.Errorf("Error reading headers=%v", err)
 				continue
 			}
-			sess, err := t.registry.GetHttpSession(header)
+			sess, tunn, err := t.registry.GetHttpSession(header)
 			if err != nil {
 				conn.Close()
 				log.Errorf("Connection closed %v", err)
 				continue
 			}
 			c := &Conn{Peeked: peekedBytes.Bytes(), WriteCloser: wcTls}
-			doProxyTcp(c, sess)
+			doProxyTcp(c, tunn, sess)
 		}
 	}
 }
-
-func (t *instance) startTunnelServer(muxServer net.Listener) {
+func (t *instance) Start() error {
+	serverListener, err := net.Listen("tcp", t.listenAddress)
+	if err != nil {
+		return err
+	}
+	tunnelListener, err := net.Listen("tcp", t.tunnelAddress)
+	if err != nil {
+		return err
+	}
+	wg := &sync.WaitGroup{}
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		err := t.startMainServer(
+			serverListener,
+		)
+		if err != nil {
+			log.Errorf("Failed to start listening server:%v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		err = t.startTunnelServer(
+			tunnelListener,
+		)
+		if err != nil {
+			log.Errorf("Failed to start tunnel server:%v", err)
+		}
+	}()
+	wg.Wait()
+	return nil
+}
+func (t *instance) startTunnelServer(muxServer net.Listener) error {
+	log.Infof("Tunnel server listening on %s", muxServer.Addr().String())
 	for {
 		conn, err := muxServer.Accept()
 		if err != nil {
@@ -293,30 +355,47 @@ func (t *instance) startTunnelServer(muxServer net.Listener) {
 			continue
 		}
 		log.Debugf("client %s connected", conn.RemoteAddr().String())
-		sess, err := yamux.Server(conn, nil)
+		cfg := yamux.DefaultConfig()
+		sess, err := yamux.Server(conn, cfg)
 		if err != nil {
 			log.Warnf("Couldn't setup yamux server: %v", err)
 			continue
 		}
-		err = t.registry.StoreSession(
+		tunn, err := t.registry.StoreSession(
 			sess,
 		)
 		if err != nil {
 			log.Warnf("Couldn't store session: %v", err)
 			continue
 		}
+		go func() {
+			failedPings := 0
+			for {
+				_, err := sess.Ping()
+				if err != nil {
+					failedPings += 1
+					log.Warnf("Session %s doesn't seem active: %v", tunn.ID, err)
+				} else {
+					failedPings = 0
+				}
+				if failedPings >= 5 {
+					log.Warnf("Killing session %s", tunn.ID)
+					t.registry.RemoveSession(tunn)
+					break
+				}
+				time.Sleep(5 * time.Second)
+			}
+		}()
 	}
 }
 
 func readHttpRequest(r io.Reader) (http.Header, error) {
 	br := bufio.NewReader(r)
 	tp := textproto.NewReader(br)
-	var s string
 	var err error
-	if s, err = tp.ReadLine(); err != nil {
+	if _, err = tp.ReadLine(); err != nil {
 		return nil, err
 	}
-	log.Infof("First line %s", s)
 	mimeHeader, err := tp.ReadMIMEHeader()
 	headers := http.Header(mimeHeader)
 	if err != nil {
@@ -334,7 +413,6 @@ func peekClientHello(br *bufio.Reader) (*tls.ClientHelloInfo, bool, []byte, erro
 }
 
 func readClientHello(br *bufio.Reader) (*tls.ClientHelloInfo, bool, []byte, error) {
-
 	return clientHelloServerName(br)
 }
 
