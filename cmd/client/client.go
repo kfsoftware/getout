@@ -59,7 +59,7 @@ func (c *clientCmd) run() error {
 			defer reader.Close()
 			_, err := io.Copy(writer, reader)
 			if err != nil {
-				fmt.Printf("io.Copy error: %s", err)
+				log.Warnf("io.Copy error: %s", err)
 			}
 			log.Infof("Connection finished")
 		}

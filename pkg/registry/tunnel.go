@@ -112,8 +112,7 @@ func (r *TunnelRegistry) StoreSession(
 	var sz int64
 	err = binary.Read(initialConn, binary.LittleEndian, &sz)
 	reqBytes := make([]byte, sz)
-	n, err := initialConn.Read(reqBytes)
-	log.Debugf("Read message %s %d", reqBytes, n)
+	_, err = initialConn.Read(reqBytes)
 	if err != nil {
 		log.Warnf("Failed to read initial connection: %v", err)
 		return nil, err
@@ -134,6 +133,7 @@ func (r *TunnelRegistry) StoreSession(
 		protocol = db.HttpProtocol
 		url = tunnelReq.GetHttp().GetHost()
 	}
+	log.Tracef("Saving session")
 	tunn, err := r.saveSession(initialConn, url, protocol)
 	if err != nil {
 		return nil, err
@@ -178,9 +178,7 @@ func (r *TunnelRegistry) saveSession(conn net.Conn, url string, protocol db.Prot
 	}
 	return tunnel, nil
 }
-func (r *TunnelRegistry) RegisterEvent() {
 
-}
 
 type TunnelCtx struct {
 	DestConn        net.Conn
@@ -202,13 +200,18 @@ func (r *TunnelRegistry) GetTLSSession(clientHello *tls.ClientHelloInfo) (*yamux
 		}
 	}
 	if sess == nil {
-		log.Warnf("Tunnel not found")
 		return nil, nil, errors.Errorf("No tlsTunnel found")
 	}
 
 	return sess, tunn, nil
 }
 
+func (r *TunnelRegistry) GetHttpTunnels() (map[string]*HttpsTunnel, error) {
+	return r.httpsTunnels, nil
+}
+func (r *TunnelRegistry) GetTLSTunnels() (map[string]*TlsTunnel, error) {
+	return r.tlsTunnels, nil
+}
 func (r *TunnelRegistry) GetHttpSession(req http.Header) (*yamux.Session, *db.Tunnel, error) {
 	var sess *yamux.Session
 	var tunn *db.Tunnel
@@ -222,7 +225,6 @@ func (r *TunnelRegistry) GetHttpSession(req http.Header) (*yamux.Session, *db.Tu
 		}
 	}
 	if sess == nil {
-		log.Warnf("Tunnel not found")
 		return nil, nil, errors.Errorf("No httpsTunnel found")
 	}
 

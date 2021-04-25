@@ -36,7 +36,7 @@ func (h *httpsClientCmd) startServer() error {
 	if err != nil {
 		return err
 	}
-	err = tunnelCli.Start()
+	err = tunnelCli.StartHttps()
 	if err != nil {
 		return err
 	}

@@ -34,9 +34,9 @@ import (
 
 func testConf() *yamux.Config {
 	conf := yamux.DefaultConfig()
-	conf.AcceptBacklog = 64
-	conf.KeepAliveInterval = 100 * time.Millisecond
-	conf.ConnectionWriteTimeout = 250 * time.Millisecond
+	//conf.AcceptBacklog = 64
+	//conf.KeepAliveInterval = 100 * time.Millisecond
+	//conf.ConnectionWriteTimeout = 250 * time.Millisecond
 	return conf
 }
 
@@ -116,11 +116,12 @@ type ServerConfig struct {
 	Client  *http.Client
 }
 
-func startTlsServer(handler http.Handler, sni string) (*http.Server, *ServerConfig, error) {
+func fakeCertificates(sni string) (tls.Certificate, *x509.Certificate, error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, nil, err
+		return tls.Certificate{}, nil, err
 	}
+
 	template := x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject: pkix.Name{
@@ -151,18 +152,29 @@ func startTlsServer(handler http.Handler, sni string) (*http.Server, *ServerConf
 
 	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, publicKey(priv), priv)
 	if err != nil {
-		return nil, nil, err
+		return tls.Certificate{}, nil, err
 	}
 	crtBuffer := &bytes.Buffer{}
 	err = pem.Encode(crtBuffer, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
 	if err != nil {
-		return nil, nil, err
+		return tls.Certificate{}, nil, err
 	}
 	crtBytes := crtBuffer.Bytes()
 	pkBuffer := &bytes.Buffer{}
 	err = pem.Encode(pkBuffer, pemBlockForKey(priv))
 	pkBytes := pkBuffer.Bytes()
 	pair, err := tls.X509KeyPair(crtBytes, pkBytes)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	x509Cert, err := x509.ParseCertificate(derBytes)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	return pair,x509Cert,  nil
+}
+func startTlsServer(handler http.Handler, sni string) (*http.Server, *ServerConfig, error) {
+	pair, certificate, err := fakeCertificates(sni)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -174,11 +186,8 @@ func startTlsServer(handler http.Handler, sni string) (*http.Server, *ServerConf
 		Handler:   handler,
 		TLSConfig: config,
 	}
+
 	certpool := x509.NewCertPool()
-	certificate, err := x509.ParseCertificate(derBytes)
-	if err != nil {
-		return nil, nil, err
-	}
 	certpool.AddCert(certificate)
 	client := &http.Client{
 		Transport: &http.Transport{
@@ -219,26 +228,40 @@ func getDb() *gorm.DB {
 }
 
 func TestTls(t *testing.T) {
-	client, server := testClientServer()
-	defer func(client *yamux.Session) {
-		_ = client.Close()
-	}(client)
-	defer func(server *yamux.Session) {
-		_ = server.Close()
-	}(server)
+
 	db := getDb()
 	tunnelRegistry := registry.NewTunnelRegistry(db)
-	i := &instance{registry: tunnelRegistry}
+	serverListener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("Err: %v", err)
+	}
+	tunnelListener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("Err: %v", err)
+	}
+	adminListener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("Err: %v", err)
+	}
+	i := NewTunnelServerInstance(
+		tunnelRegistry,
+		tunnelListener,
+		serverListener,
+		adminListener,
+		"localhost",
+		[]tls.Certificate{},
+	)
 	testServer, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Err: %v", err)
 	}
 	log.Infof("Address=%s", testServer.Addr().String())
-	incList, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatalf("Err: %v", err)
-	}
-	go i.startMainServer(incList)
+	go func() {
+		err := i.Start()
+		if err != nil {
+			t.Fatalf("Err: %v", err)
+		}
+	}()
 
 	body := "Go is a general-purpose language designed with systems programming in mind."
 	handlerFunc := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -251,21 +274,23 @@ func TestTls(t *testing.T) {
 	}
 	defer ts.Close()
 	log.Infof("Address %s", cfg.Address)
-	tunnelList, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatalf("Err: %v", err)
-	}
-	go i.startTunnelServer(tunnelList)
 	wg := &sync.WaitGroup{}
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, err = tunnelRegistry.StoreSession(server)
-		if err != nil {
-			t.Fatalf("Err: %v", err)
-		}
-	}()
-	tunnelCli := tunnelClient{sess: client, address: cfg.Address}
+	wg.Add(1)
+
+	tunnelListAddrs := tunnelListener.Addr().String()
+	chunks := strings.Split(tunnelListAddrs, ":")
+	port := chunks[len(chunks)-1]
+	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%s", port))
+	if err != nil {
+		panic(err)
+	}
+	client, err := yamux.Client(conn, nil)
+	if err != nil {
+		panic(err)
+	}
+	chunks = strings.Split(cfg.Address, ":")
+	port = chunks[len(chunks)-1]
+	tunnelCli := NewTunnelClient(client, fmt.Sprintf("localhost:%s", port))
 	err = tunnelCli.StartTlsTunnel("localhost")
 	if err != nil {
 		t.Fatalf("Err: %v", err)
@@ -275,9 +300,9 @@ func TestTls(t *testing.T) {
 		tunnelCli.Start()
 	}()
 	wg.Wait()
-	mainServerAddr := incList.Addr().String()
-	chunks := strings.Split(mainServerAddr, ":")
-	port := chunks[len(chunks)-1]
+	mainServerAddr := serverListener.Addr().String()
+	chunks = strings.Split(mainServerAddr, ":")
+	port = chunks[len(chunks)-1]
 	resp, err := cfg.Client.Get(fmt.Sprintf("https://%s:%s", "localhost", port))
 	if err != nil {
 		t.Fatalf("Err: %v", err)
@@ -293,95 +318,33 @@ func TestTls(t *testing.T) {
 	}
 }
 
-func TestHttp(t *testing.T) {
-	client, server := testClientServer()
-	defer client.Close()
-	defer server.Close()
-	db := getDb()
-	tunnelRegistry := registry.NewTunnelRegistry(db)
-	i := &instance{registry: tunnelRegistry}
-	testServer, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatalf("Err: %v", err)
-	}
-	log.Infof("Address=%s", testServer.Addr().String())
-	incList, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatalf("Err: %v", err)
-	}
-	go i.startMainServer(incList)
-	body := "Go is a general-purpose language designed with systems programming in mind."
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Date", "Wed, 19 Jul 1972 19:00:00 GMT")
-		fmt.Fprintln(w, body)
-	}))
-	defer ts.Close()
-	log.Infof("Address %s", ts.URL)
-	tunnelList, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatalf("Err: %v", err)
-	}
-	go i.startTunnelServer(tunnelList)
-	wg := &sync.WaitGroup{}
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, err = tunnelRegistry.StoreSession(server)
-		if err != nil {
-			t.Fatalf("Err: %v", err)
-		}
-	}()
-	u, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("Err: %v", err)
-	}
-	tunnelCli := tunnelClient{sess: client, address: u.Host}
-	err = tunnelCli.StartHttpTunnel("localhost")
-	if err != nil {
-		t.Fatalf("Err: %v", err)
-	}
-	go func() {
-		wg.Done()
-		tunnelCli.Start()
-	}()
-	wg.Wait()
-	mainServerAddr := incList.Addr().String()
-	chunks := strings.Split(mainServerAddr, ":")
-	port := chunks[len(chunks)-1]
-	r := strings.NewReader(`{"foo":"bar"}`)
-	resp, err := http.Post(fmt.Sprintf("http://%s:%s", "localhost", port), "application/json", r)
-	if err != nil {
-		t.Fatalf("Err: %v", err)
-	}
-	defer resp.Body.Close()
-	bodyBytes, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Err: %v", err)
-	}
-	bodyStr := string(bodyBytes)
-	if !strings.EqualFold(bodyStr, fmt.Sprintf("%s\n", body)) {
-		t.Fatalf("Unexpected response, got=%s expected=%s", bodyStr, body)
-	}
-}
-
 func TestHttps(t *testing.T) {
-	client, server := testClientServer()
-	defer client.Close()
-	defer server.Close()
 	clientDb := getDb()
 	tunnelRegistry := registry.NewTunnelRegistry(clientDb)
-	i := &instance{registry: tunnelRegistry}
-	testServer, err := net.Listen("tcp", ":0")
+	serverListener, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatalf("Err: %v", err)
 	}
-	log.Infof("Address=%s", testServer.Addr().String())
-	incList, err := net.Listen("tcp", ":0")
+	tunnelListener, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatalf("Err: %v", err)
 	}
-	go i.startMainServer(incList)
-
+	adminListener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("Err: %v", err)
+	}
+	pair, x509Cert, err := fakeCertificates("localhost")
+	if err != nil {
+		t.Fatalf("Err: %v", err)
+	}
+	i := NewTunnelServerInstance(
+		tunnelRegistry,
+		tunnelListener,
+		serverListener,
+		adminListener,
+		"localhost",
+		[]tls.Certificate{pair},
+	)
 	body := "Go is a general-purpose language designed with systems programming in mind."
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Date", "Wed, 19 Jul 1972 19:00:00 GMT")
@@ -389,16 +352,10 @@ func TestHttps(t *testing.T) {
 	}))
 	defer ts.Close()
 	log.Infof("Address %s", ts.URL)
-	tunnelList, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatalf("Err: %v", err)
-	}
-	go i.startTunnelServer(tunnelList)
 	wg := &sync.WaitGroup{}
-	wg.Add(2)
+	wg.Add(1)
 	go func() {
-		defer wg.Done()
-		_, err = tunnelRegistry.StoreSession(server)
+		err := i.Start()
 		if err != nil {
 			t.Fatalf("Err: %v", err)
 		}
@@ -407,20 +364,33 @@ func TestHttps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Err: %v", err)
 	}
-	tunnelCli := tunnelClient{sess: client, address: u.Host}
+	tunnelListAddrs := tunnelListener.Addr().String()
+	chunks := strings.Split(tunnelListAddrs, ":")
+	port := chunks[len(chunks)-1]
+	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%s", port))
+	if err != nil {
+		panic(err)
+	}
+	client, err := yamux.Client(conn, nil)
+	if err != nil {
+		panic(err)
+	}
+	tunnelCli := NewTunnelClient(client, u.Host)
 	err = tunnelCli.StartHttpTunnel("localhost")
 	if err != nil {
 		t.Fatalf("Err: %v", err)
 	}
 	go func() {
 		wg.Done()
-		tunnelCli.Start()
+		err := tunnelCli.Start()
+		if err != nil {
+			t.Fatalf("Err: %v", err)
+		}
 	}()
 	wg.Wait()
-	mainServerAddr := incList.Addr().String()
-	chunks := strings.Split(mainServerAddr, ":")
-	port := chunks[len(chunks)-1]
-	//time.Sleep(100 * time.Second)
+	mainServerAddr := serverListener.Addr().String()
+	chunks = strings.Split(mainServerAddr, ":")
+	port = chunks[len(chunks)-1]
 	m := map[string]string{}
 	for i := 0; i < 1000; i++ {
 		m[fmt.Sprintf("key%d", i)] = fmt.Sprintf("really long string ......................... %d", i)
@@ -430,7 +400,8 @@ func TestHttps(t *testing.T) {
 		t.Fatalf("Err: %v", err)
 	}
 	r := bytes.NewReader(jsonBytes)
-	resp, err := http.Post(fmt.Sprintf("https://%s:%s", "localhost", port), "application/json", r)
+	httpCli := getHttpClient(x509Cert)
+	resp, err := httpCli.Post(fmt.Sprintf("https://%s:%s", "localhost", port), "application/json", r)
 	if err != nil {
 		t.Fatalf("Err: %v", err)
 	}
@@ -444,7 +415,19 @@ func TestHttps(t *testing.T) {
 		t.Fatalf("Unexpected response, got=%s expected=%s", bodyStr, body)
 	}
 }
-
+func getHttpClient(crt *x509.Certificate) *http.Client {
+	certpool := x509.NewCertPool()
+	certpool.AddCert(crt)
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				RootCAs: certpool,
+			},
+			ForceAttemptHTTP2: false,
+		},
+	}
+	return client
+}
 func benchmarkHttps(n int, b *testing.B) {
 	client, server := testClientServer()
 	defer client.Close()
