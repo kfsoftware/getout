@@ -6,7 +6,7 @@ import (
 	"github.com/kfsoftware/getout/pkg/registry"
 	"github.com/kfsoftware/getout/pkg/tunnel"
 	"github.com/spf13/cobra"
-	"gorm.io/driver/sqlite"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"net"
 	"os"
@@ -19,17 +19,24 @@ type serverCmd struct {
 	tlsKey        string
 	defaultDomain string
 	adminAddr     string
+	postgresUrl   string
 }
 
 func (c *serverCmd) validate() error {
 	return nil
 }
-func getDb() *gorm.DB {
+func getDb(datasourceName string) *gorm.DB {
 	os.Setenv("TZ", "UTC")
-
-	dbClient, err := gorm.Open(sqlite.Open("/disco-grande/go/src/github.com/kfsoftware/getout/getout.db"), &gorm.Config{
-
-	})
+	gormConfig := &gorm.Config{	}
+	dbClient, err := gorm.Open(
+		postgres.New(
+			postgres.Config{
+				DSN:                  datasourceName,
+				PreferSimpleProtocol: true,
+			},
+		),
+		gormConfig,
+	)
 	if err != nil {
 		panic(err)
 	}
@@ -40,7 +47,7 @@ func getDb() *gorm.DB {
 	return dbClient
 }
 func (c *serverCmd) run() error {
-	clientDb := getDb()
+	clientDb := getDb(c.postgresUrl)
 	tunnelRegistry := registry.NewTunnelRegistry(clientDb)
 	crt, err := tls.LoadX509KeyPair(c.tlsCrt, c.tlsKey)
 	if err != nil {
@@ -91,6 +98,7 @@ func NewServerCmd() *cobra.Command {
 	persistentFlags.StringVarP(&c.tlsKey, "tls-key", "", "", "Path to a TLS key file")
 	persistentFlags.StringVarP(&c.tlsCrt, "tls-crt", "", "", "Path to a TLS certificate file")
 	persistentFlags.StringVarP(&c.defaultDomain, "default-domain", "", "", "Default domain where the tunnels are hosted")
+	persistentFlags.StringVarP(&c.postgresUrl, "postgres", "", "", "Postgres connection string")
 
 	cmd.MarkPersistentFlagRequired("addr")
 	cmd.MarkPersistentFlagRequired("tunnel-addr")

@@ -101,7 +101,9 @@ func (c *tunnelClient) Start() error {
 		}
 		destConn, err := net.Dial("tcp", c.address)
 		if err != nil {
-			return err
+			log.Warnf("Failed to invoke %s, closing connection: %v", c.address, err)
+			conn.Close()
+			continue
 		}
 		log.Debugf("client %s connected", conn.RemoteAddr().String())
 		copyConn := func(writer, reader net.Conn) {
