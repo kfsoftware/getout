@@ -1,125 +1,83 @@
 package server
 
 import (
-	"bytes"
 	"crypto/tls"
-	"encoding/binary"
-	"fmt"
-	"github.com/hashicorp/yamux"
-	log "github.com/schollz/logger"
+	"github.com/kfsoftware/getout/pkg/db"
+	"github.com/kfsoftware/getout/pkg/registry"
+	"github.com/kfsoftware/getout/pkg/tunnel"
 	"github.com/spf13/cobra"
-	"io"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 	"net"
-	"time"
+	"os"
 )
 
 type serverCmd struct {
-	tunnelAddr string
-	addr       string
-
+	tunnelAddr    string
+	addr          string
+	tlsCrt        string
+	tlsKey        string
+	defaultDomain string
+	adminAddr     string
+	postgresUrl   string
 }
 
 func (c *serverCmd) validate() error {
 	return nil
 }
+func getDb(datasourceName string) *gorm.DB {
+	os.Setenv("TZ", "UTC")
+	gormConfig := &gorm.Config{	}
+	dbClient, err := gorm.Open(
+		postgres.New(
+			postgres.Config{
+				DSN:                  datasourceName,
+				PreferSimpleProtocol: true,
+			},
+		),
+		gormConfig,
+	)
+	if err != nil {
+		panic(err)
+	}
+	err = dbClient.AutoMigrate(&db.Tunnel{})
+	if err != nil {
+		panic(err)
+	}
+	return dbClient
+}
 func (c *serverCmd) run() error {
-	server, err := net.Listen("tcp", c.addr)
+	clientDb := getDb(c.postgresUrl)
+	tunnelRegistry := registry.NewTunnelRegistry(clientDb)
+	crt, err := tls.LoadX509KeyPair(c.tlsCrt, c.tlsKey)
 	if err != nil {
-		panic(fmt.Errorf("error listening on %s: %w", c.addr, err))
+		return err
 	}
-	defer server.Close()
-	muxServer, err := net.Listen("tcp", c.tunnelAddr)
+	serverListener, err := net.Listen("tcp", c.addr)
 	if err != nil {
-		panic(fmt.Errorf("error listening on %s: %w", c.tunnelAddr, err))
+		return err
 	}
-	defer muxServer.Close()
-	var sessions []*Session
-	go func() {
-		for {
-			conn, err := muxServer.Accept()
-			if err != nil {
-				log.Warnf("Connection closed")
-				return
-			}
-			log.Debugf("client %s connected", conn.RemoteAddr().String())
-			sess, err := yamux.Server(conn, nil)
-			if err != nil {
-				panic(err)
-			}
-			initialConn, err := sess.Accept()
-			if err != nil {
-				panic(err)
-			}
-			var sz int64
-			err = binary.Read(initialConn, binary.LittleEndian, &sz)
-			sni := make([]byte, sz)
-			n, err := initialConn.Read(sni)
-			log.Debugf("Read message %s %d", sni, n)
-			if err != nil {
-				panic(err)
-			}
-			sessions = append(sessions, &Session{
-				sni:  string(sni),
-				sess: sess,
-			})
-		}
-	}()
-	for {
-		conn, err := server.Accept()
-		if err != nil {
-			panic(err)
-		}
-		log.Debugf("client %s connected", conn.RemoteAddr().String())
-
-		clientHello, originalConn, err := peekClientHello(conn)
-		if err != nil {
-			log.Errorf("Error extracting client hello %v", err)
-		}
-		sni := clientHello.ServerName
-		log.Infof("SNI=%s", sni)
-		if len(sessions) == 0 {
-			conn.Close()
-			continue
-		}
-		var destSess *Session
-		for _, session := range sessions {
-			if session.sni == sni {
-				destSess = session
-			}
-		}
-		if destSess == nil {
-			log.Warnf("Session not found")
-			conn.Close()
-			continue
-		}
-		destConn, err := destSess.sess.Open()
-		if err != nil {
-			conn.Close()
-			sessions = RemoveIndex(sessions, 0)
-			log.Warnf("Connection closed")
-			continue
-		}
-		copyConn := func(writer net.Conn, reader net.Conn) {
-			defer writer.Close()
-			defer reader.Close()
-			_, err := io.Copy(writer, reader)
-			if err != nil {
-				log.Tracef("io.Copy error: %s", err)
-			}
-			log.Infof("Connection finished")
-		}
-		copyStream := func(writer net.Conn, reader io.Reader) {
-			defer writer.Close()
-			_, err := io.Copy(writer, reader)
-			if err != nil {
-				log.Tracef("io.Copy error: %s", err)
-			}
-			log.Infof("Connection finished")
-		}
-
-		go copyStream(destConn, originalConn)
-		go copyConn(conn, destConn)
+	tunnelListener, err := net.Listen("tcp", c.tunnelAddr)
+	if err != nil {
+		return err
 	}
+	adminListener, err := net.Listen("tcp", c.adminAddr)
+	if err != nil {
+		return err
+	}
+	i := tunnel.NewTunnelServerInstance(
+		tunnelRegistry,
+		tunnelListener,
+		serverListener,
+		adminListener,
+		c.defaultDomain,
+		[]tls.Certificate{crt},
+	)
+	err = i.Start()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func NewServerCmd() *cobra.Command {
@@ -136,57 +94,17 @@ func NewServerCmd() *cobra.Command {
 	persistentFlags := cmd.PersistentFlags()
 	persistentFlags.StringVarP(&c.addr, "addr", "", "", "Address to listen for requests")
 	persistentFlags.StringVarP(&c.tunnelAddr, "tunnel-addr", "", "", "Address to manage the tunnel connections")
+	persistentFlags.StringVarP(&c.adminAddr, "admin-addr", "", "", "Address to view information")
+	persistentFlags.StringVarP(&c.tlsKey, "tls-key", "", "", "Path to a TLS key file")
+	persistentFlags.StringVarP(&c.tlsCrt, "tls-crt", "", "", "Path to a TLS certificate file")
+	persistentFlags.StringVarP(&c.defaultDomain, "default-domain", "", "", "Default domain where the tunnels are hosted")
+	persistentFlags.StringVarP(&c.postgresUrl, "postgres", "", "", "Postgres connection string")
 
 	cmd.MarkPersistentFlagRequired("addr")
 	cmd.MarkPersistentFlagRequired("tunnel-addr")
+	cmd.MarkPersistentFlagRequired("admin-addr")
+	cmd.MarkPersistentFlagRequired("tls-key")
+	cmd.MarkPersistentFlagRequired("tls-crt")
+	cmd.MarkPersistentFlagRequired("default-domain")
 	return cmd
-}
-
-type Session struct {
-	sni  string
-	sess *yamux.Session
-}
-
-func RemoveIndex(s []*Session, index int) []*Session {
-	return append(s[:index], s[index+1:]...)
-}
-
-func peekClientHello(reader io.Reader) (*tls.ClientHelloInfo, io.Reader, error) {
-	peekedBytes := new(bytes.Buffer)
-	hello, err := readClientHello(io.TeeReader(reader, peekedBytes))
-	if err != nil {
-		return nil, nil, err
-	}
-	return hello, io.MultiReader(peekedBytes, reader), nil
-}
-
-type readOnlyConn struct {
-	reader io.Reader
-}
-
-func (conn readOnlyConn) Read(p []byte) (int, error)         { return conn.reader.Read(p) }
-func (conn readOnlyConn) Write(p []byte) (int, error)        { return 0, io.ErrClosedPipe }
-func (conn readOnlyConn) Close() error                       { return nil }
-func (conn readOnlyConn) LocalAddr() net.Addr                { return nil }
-func (conn readOnlyConn) RemoteAddr() net.Addr               { return nil }
-func (conn readOnlyConn) SetDeadline(t time.Time) error      { return nil }
-func (conn readOnlyConn) SetReadDeadline(t time.Time) error  { return nil }
-func (conn readOnlyConn) SetWriteDeadline(t time.Time) error { return nil }
-
-func readClientHello(reader io.Reader) (*tls.ClientHelloInfo, error) {
-	var hello *tls.ClientHelloInfo
-
-	err := tls.Server(readOnlyConn{reader: reader}, &tls.Config{
-		GetConfigForClient: func(argHello *tls.ClientHelloInfo) (*tls.Config, error) {
-			hello = new(tls.ClientHelloInfo)
-			*hello = *argHello
-			return nil, nil
-		},
-	}).Handshake()
-
-	if hello == nil {
-		return nil, err
-	}
-
-	return hello, nil
 }
