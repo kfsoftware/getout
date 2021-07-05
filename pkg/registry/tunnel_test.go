@@ -81,7 +81,7 @@ func testClientServer() (*yamux.Session, *yamux.Session) {
 //	}
 //	wg := &sync.WaitGroup{}
 //	wg.Add(2)
-//	tunnelReg := TunnelRegistry{}
+//	tunnelReg := PostgresTunnelRegistry{}
 //	go func() {
 //		defer wg.Done()
 //		_, err = tunnelReg.StoreSession(server)

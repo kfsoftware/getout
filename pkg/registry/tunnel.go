@@ -18,9 +18,155 @@ import (
 	"time"
 )
 
-type TunnelRegistry struct {
-	tlsTunnels   map[string]*TlsTunnel
-	httpsTunnels map[string]*HttpsTunnel
+type TunnelRegistry interface {
+	RemoveSession(id string) error
+	StoreSession(
+		sess *yamux.Session,
+	) (ITunnel, error)
+	GetTLSSession(clientHello *tls.ClientHelloInfo) (*yamux.Session, error)
+	GetHttpTunnels() (map[string]IHttpsTunnel, error)
+	GetTLSTunnels() (map[string]ITlsTunnel, error)
+	GetHttpSession(req http.Header) (*yamux.Session, error)
+}
+type InMemTunnelRegistry struct {
+	tlsTunnels   map[string]ITlsTunnel
+	httpsTunnels map[string]IHttpsTunnel
+}
+
+func (i InMemTunnelRegistry) RemoveSession(id string) error {
+	tlsTunnels, err := i.GetTLSTunnels()
+	if err != nil {
+		return err
+	}
+	_, ok := tlsTunnels[id]
+	if ok {
+		i.removeTlsTunnel(id)
+		return nil
+	}
+	httpsTunnels, err := i.GetHttpTunnels()
+	if err != nil {
+		return err
+	}
+	_, ok = httpsTunnels[id]
+	if ok {
+		i.removeHttpTunnel(id)
+		return nil
+	}
+	return nil
+}
+func (i *InMemTunnelRegistry) removeHttpTunnel(id string) {
+	delete(i.httpsTunnels, id)
+}
+func (i *InMemTunnelRegistry) removeTlsTunnel(id string) {
+	delete(i.tlsTunnels, id)
+}
+func NewTlsTunnel() ITlsTunnel {
+	return &InMemTlsTunnel{}
+}
+func NewHttpsTunnel() IHttpsTunnel {
+	return &InMemHttpsTunnel{}
+}
+func (i *InMemTunnelRegistry) GetHttpTunnels() (map[string]IHttpsTunnel, error) {
+	return i.httpsTunnels, nil
+}
+func (i *InMemTunnelRegistry) GetTLSTunnels() (map[string]ITlsTunnel, error) {
+	return i.tlsTunnels, nil
+}
+func (i *InMemTunnelRegistry) GetHttpSession(req http.Header) (*yamux.Session, error) {
+	var sess *yamux.Session
+	httpTunnels, err := i.GetHttpTunnels()
+	if err != nil {
+		return nil, err
+	}
+	for _, httpsTunnel := range httpTunnels {
+		if exists := httpsTunnel.Match(
+			req,
+		); exists {
+			sess = httpsTunnel.GetSession()
+			break
+		}
+	}
+	if sess == nil {
+		return nil, errors.Errorf("No httpsTunnel found")
+	}
+	return sess, nil
+}
+
+func (i InMemTunnelRegistry) StoreSession(sess *yamux.Session) (ITunnel, error) {
+	initialConn, err := sess.Accept()
+	if err != nil {
+		log.Warnf("Failed to accept connection: %v", err)
+		return nil, err
+	}
+	defer initialConn.Close()
+	var sz int64
+	err = binary.Read(initialConn, binary.LittleEndian, &sz)
+	reqBytes := make([]byte, sz)
+	_, err = initialConn.Read(reqBytes)
+	if err != nil {
+		log.Warnf("Failed to read initial connection: %v", err)
+		return nil, err
+	}
+	tunnelReq := &messages.TunnelRequest{}
+	err = proto.Unmarshal(reqBytes, tunnelReq)
+	if err != nil {
+		return nil, err
+	}
+	var url string
+	if tunnelReq.GetTls() != nil {
+		url = tunnelReq.GetTls().GetSni()
+		log.Infof("Received tls tunnel request %s", url)
+	} else if tunnelReq.GetHttp() != nil {
+		log.Infof("Received http tunnel request host=%s", tunnelReq.GetHttp().Host)
+		url = tunnelReq.GetHttp().GetHost()
+	}
+	log.Tracef("Saving session")
+	tunnelID := uuid.NewString()
+	var tunn ITunnel
+	if tunnelReq.GetTls() != nil {
+		url = tunnelReq.GetTls().GetSni()
+		tlsTunnel := InMemTlsTunnel{
+			sni:  url,
+			sess: sess,
+			id:   tunnelID,
+		}
+		tunn = tlsTunnel
+		i.tlsTunnels[tunnelID] = tlsTunnel
+	} else if tunnelReq.GetHttp() != nil {
+		log.Infof("Received http tunnel request host=%s", tunnelReq.GetHttp().Host)
+		url = tunnelReq.GetHttp().GetHost()
+		httpsTunnel := InMemHttpsTunnel{
+			host: url,
+			sess: sess,
+			id:   tunnelID,
+		}
+		tunn = httpsTunnel
+		i.httpsTunnels[tunnelID] = httpsTunnel
+	}
+
+	return tunn, nil
+}
+
+func (i InMemTunnelRegistry) GetTLSSession(clientHello *tls.ClientHelloInfo) (*yamux.Session, error) {
+	var sess *yamux.Session
+	for _, tlsTunnel := range i.tlsTunnels {
+		if exists := tlsTunnel.Match(
+			clientHello,
+		); exists {
+			sess = tlsTunnel.GetSession()
+			break
+		}
+	}
+	if sess == nil {
+		return nil, errors.Errorf("No tlsTunnel found")
+	}
+
+	return sess, nil
+}
+
+type PostgresTunnelRegistry struct {
+	tlsTunnels   map[string]ITlsTunnel
+	httpsTunnels map[string]IHttpsTunnel
 	db           *gorm.DB
 }
 type Protocol string
@@ -34,34 +180,135 @@ type Tunnel interface {
 	GetSession() *yamux.Session
 	Match(req *http.Request, clientHello *tls.ClientHelloInfo) bool
 }
-
-type HttpsTunnel struct {
-	tunnel *db.Tunnel
-	host   string
-	sess   *yamux.Session
+type IHttpsTunnel interface {
+	Match(req http.Header) bool
+	GetSession() *yamux.Session
+	GetID() string
+	GetProperties() (HttpTunnelProperties, error)
+}
+type ITunnel interface {
+	GetSession() *yamux.Session
+	GetID() string
+}
+type ITlsTunnel interface {
+	Match(clientHello *tls.ClientHelloInfo) bool
+	GetSession() *yamux.Session
+	GetID() string
+	GetProperties() (TlsTunnelProperties, error)
+}
+type HttpTunnelProperties struct {
+	Host          string
+	RemoteAddress string
+}
+type TlsTunnelProperties struct {
+	SNI           string
+	RemoteAddress string
+}
+type InMemHttpsTunnel struct {
+	host string
+	sess *yamux.Session
+	id   string
 }
 
-func (t *HttpsTunnel) Match(req http.Header) bool {
+func (t InMemHttpsTunnel) GetProperties() (HttpTunnelProperties, error) {
+	return HttpTunnelProperties{
+		Host:          t.host,
+		RemoteAddress: t.sess.RemoteAddr().String(),
+	}, nil
+}
+
+func (t InMemHttpsTunnel) GetID() string {
+	return t.id
+}
+
+func (t InMemHttpsTunnel) Match(req http.Header) bool {
 	host := strings.Split(req.Get("Host"), ":")[0]
 	return host == t.host
 }
-func (t *HttpsTunnel) GetSession() *yamux.Session {
+
+func (t InMemHttpsTunnel) GetSession() *yamux.Session {
 	return t.sess
 }
 
-type TlsTunnel struct {
+type InMemTlsTunnel struct {
 	tunnel *db.Tunnel
 	sni    string
 	sess   *yamux.Session
+	id     string
 }
 
-func (t *TlsTunnel) Match(clientHello *tls.ClientHelloInfo) bool {
+func (t InMemTlsTunnel) GetProperties() (TlsTunnelProperties, error) {
+	return TlsTunnelProperties{
+		SNI:           t.sni,
+		RemoteAddress: t.sess.RemoteAddr().String(),
+	}, nil
+}
+
+func (t InMemTlsTunnel) GetID() string {
+	return t.id
+}
+
+func (t InMemTlsTunnel) Match(clientHello *tls.ClientHelloInfo) bool {
 	if clientHello == nil {
 		return false
 	}
 	return clientHello.ServerName == t.sni
 }
-func (t *TlsTunnel) GetSession() *yamux.Session {
+func (t InMemTlsTunnel) GetSession() *yamux.Session {
+	return t.sess
+}
+
+type PostgresHttpsTunnel struct {
+	tunnel *db.Tunnel
+	host   string
+	sess   *yamux.Session
+	id     string
+}
+
+func (t PostgresHttpsTunnel) GetProperties() (HttpTunnelProperties, error) {
+	return HttpTunnelProperties{
+		Host:          t.host,
+		RemoteAddress: t.sess.RemoteAddr().String(),
+	}, nil
+}
+
+func (t PostgresHttpsTunnel) GetID() string {
+	return t.id
+}
+
+func (t PostgresHttpsTunnel) Match(req http.Header) bool {
+	host := strings.Split(req.Get("Host"), ":")[0]
+	return host == t.host
+}
+func (t PostgresHttpsTunnel) GetSession() *yamux.Session {
+	return t.sess
+}
+
+type PostgresTlsTunnel struct {
+	tunnel *db.Tunnel
+	sni    string
+	sess   *yamux.Session
+	id     string
+}
+
+func (t PostgresTlsTunnel) GetProperties() (TlsTunnelProperties, error) {
+	return TlsTunnelProperties{
+		SNI:           t.sni,
+		RemoteAddress: t.sess.RemoteAddr().String(),
+	}, nil
+}
+
+func (t PostgresTlsTunnel) GetID() string {
+	return t.id
+}
+
+func (t PostgresTlsTunnel) Match(clientHello *tls.ClientHelloInfo) bool {
+	if clientHello == nil {
+		return false
+	}
+	return clientHello.ServerName == t.sni
+}
+func (t PostgresTlsTunnel) GetSession() *yamux.Session {
 	return t.sess
 }
 
@@ -75,14 +322,24 @@ type Session struct {
 	sess *yamux.Session
 }
 
-func NewTunnelRegistry(db *gorm.DB) *TunnelRegistry {
-	return &TunnelRegistry{
-		httpsTunnels: map[string]*HttpsTunnel{},
-		tlsTunnels:   map[string]*TlsTunnel{},
+func NewInMemoryTunnelRegistry() TunnelRegistry {
+	return &InMemTunnelRegistry{
+		httpsTunnels: map[string]IHttpsTunnel{},
+		tlsTunnels:   map[string]ITlsTunnel{},
+	}
+}
+func NewPostgresTunnelRegistry(db *gorm.DB) TunnelRegistry {
+	return &PostgresTunnelRegistry{
+		httpsTunnels: map[string]IHttpsTunnel{},
+		tlsTunnels:   map[string]ITlsTunnel{},
 		db:           db,
 	}
 }
-func (r *TunnelRegistry) RemoveSession(tunn *db.Tunnel) error {
+func (r *PostgresTunnelRegistry) RemoveSession(id string) error {
+	tunn, err := r.getTunnelById(id)
+	if err != nil {
+		return err
+	}
 	tunn.Active = false
 	tunn.DeletedAt = gorm.DeletedAt{
 		Time:  time.Now(),
@@ -100,9 +357,9 @@ func (r *TunnelRegistry) RemoveSession(tunn *db.Tunnel) error {
 	}
 	return nil
 }
-func (r *TunnelRegistry) StoreSession(
+func (r *PostgresTunnelRegistry) StoreSession(
 	sess *yamux.Session,
-) (*db.Tunnel, error) {
+) (ITunnel, error) {
 	initialConn, err := sess.Accept()
 	if err != nil {
 		log.Warnf("Failed to accept connection: %v", err)
@@ -138,31 +395,33 @@ func (r *TunnelRegistry) StoreSession(
 	if err != nil {
 		return nil, err
 	}
-
+	var itunn ITunnel
 	if tunnelReq.GetTls() != nil {
 		protocol = db.TlsProtocol
 		url = tunnelReq.GetTls().GetSni()
-		tlsTunnel := &TlsTunnel{
+		tlsTunnel := &PostgresTlsTunnel{
 			sni:    url,
 			sess:   sess,
 			tunnel: tunn,
 		}
+		itunn = tlsTunnel
 		r.tlsTunnels[tunn.ID] = tlsTunnel
 	} else if tunnelReq.GetHttp() != nil {
 		log.Infof("Received http tunnel request host=%s", tunnelReq.GetHttp().Host)
 		protocol = db.HttpProtocol
 		url = tunnelReq.GetHttp().GetHost()
-		httpsTunnel := &HttpsTunnel{
+		httpsTunnel := PostgresHttpsTunnel{
 			host:   url,
 			sess:   sess,
 			tunnel: tunn,
 		}
+		itunn = httpsTunnel
 		r.httpsTunnels[tunn.ID] = httpsTunnel
 	}
 
-	return tunn, nil
+	return itunn, nil
 }
-func (r *TunnelRegistry) saveSession(conn net.Conn, url string, protocol db.Protocol) (*db.Tunnel, error) {
+func (r *PostgresTunnelRegistry) saveSession(conn net.Conn, url string, protocol db.Protocol) (*db.Tunnel, error) {
 	tunnel := &db.Tunnel{
 		ID:       uuid.NewString(),
 		URL:      url,
@@ -179,7 +438,6 @@ func (r *TunnelRegistry) saveSession(conn net.Conn, url string, protocol db.Prot
 	return tunnel, nil
 }
 
-
 type TunnelCtx struct {
 	DestConn        net.Conn
 	Reader          *bufio.Reader
@@ -187,53 +445,59 @@ type TunnelCtx struct {
 	ClientHelloInfo *tls.ClientHelloInfo
 }
 
-func (r *TunnelRegistry) GetTLSSession(clientHello *tls.ClientHelloInfo) (*yamux.Session, *db.Tunnel, error) {
+func (r *PostgresTunnelRegistry) GetTLSSession(clientHello *tls.ClientHelloInfo) (*yamux.Session, error) {
 	var sess *yamux.Session
-	var tunn *db.Tunnel
 	for _, tlsTunnel := range r.tlsTunnels {
 		if exists := tlsTunnel.Match(
 			clientHello,
 		); exists {
-			tunn = tlsTunnel.tunnel
 			sess = tlsTunnel.GetSession()
 			break
 		}
 	}
 	if sess == nil {
-		return nil, nil, errors.Errorf("No tlsTunnel found")
+		return nil, errors.Errorf("No tlsTunnel found")
 	}
 
-	return sess, tunn, nil
+	return sess, nil
 }
 
-func (r *TunnelRegistry) GetHttpTunnels() (map[string]*HttpsTunnel, error) {
+func (r *PostgresTunnelRegistry) GetHttpTunnels() (map[string]IHttpsTunnel, error) {
 	return r.httpsTunnels, nil
 }
-func (r *TunnelRegistry) GetTLSTunnels() (map[string]*TlsTunnel, error) {
+func (r *PostgresTunnelRegistry) GetTLSTunnels() (map[string]ITlsTunnel, error) {
 	return r.tlsTunnels, nil
 }
-func (r *TunnelRegistry) GetHttpSession(req http.Header) (*yamux.Session, *db.Tunnel, error) {
+func (r *PostgresTunnelRegistry) GetHttpSession(req http.Header) (*yamux.Session, error) {
 	var sess *yamux.Session
-	var tunn *db.Tunnel
-	for _, httpsTunnel := range r.httpsTunnels {
+	httpTunnels, err := r.GetHttpTunnels()
+	if err != nil {
+		return nil, err
+	}
+	for _, httpsTunnel := range httpTunnels {
 		if exists := httpsTunnel.Match(
 			req,
 		); exists {
-			tunn = httpsTunnel.tunnel
 			sess = httpsTunnel.GetSession()
 			break
 		}
 	}
 	if sess == nil {
-		return nil, nil, errors.Errorf("No httpsTunnel found")
+		return nil, errors.Errorf("No httpsTunnel found")
 	}
-
-	return sess, tunn, nil
+	return sess, nil
 }
-
-func (r *TunnelRegistry) removeHttpTunnel(tunn *db.Tunnel) {
+func (r *PostgresTunnelRegistry) getTunnelById(id string) (*db.Tunnel, error) {
+	var tunn *db.Tunnel
+	result := r.db.Find(tunn, id)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return tunn, nil
+}
+func (r *PostgresTunnelRegistry) removeHttpTunnel(tunn *db.Tunnel) {
 	delete(r.httpsTunnels, tunn.ID)
 }
-func (r *TunnelRegistry) removeTlsTunnel(tunn *db.Tunnel) {
+func (r *PostgresTunnelRegistry) removeTlsTunnel(tunn *db.Tunnel) {
 	delete(r.tlsTunnels, tunn.ID)
 }

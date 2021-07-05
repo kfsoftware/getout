@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/tls"
+	"errors"
 	"github.com/kfsoftware/getout/pkg/db"
 	"github.com/kfsoftware/getout/pkg/registry"
 	"github.com/kfsoftware/getout/pkg/tunnel"
@@ -20,14 +21,22 @@ type serverCmd struct {
 	defaultDomain string
 	adminAddr     string
 	postgresUrl   string
+	db            string
 }
-
+type DbType string
+const (
+	PostgresDbType = "postgres"
+	InMemDbType = "memory"
+)
 func (c *serverCmd) validate() error {
+	if c.db != PostgresDbType && c.db != InMemDbType {
+		return errors.New("database type not supported")
+	}
 	return nil
 }
 func getDb(datasourceName string) *gorm.DB {
 	os.Setenv("TZ", "UTC")
-	gormConfig := &gorm.Config{	}
+	gormConfig := &gorm.Config{}
 	dbClient, err := gorm.Open(
 		postgres.New(
 			postgres.Config{
@@ -47,11 +56,20 @@ func getDb(datasourceName string) *gorm.DB {
 	return dbClient
 }
 func (c *serverCmd) run() error {
-	clientDb := getDb(c.postgresUrl)
-	tunnelRegistry := registry.NewTunnelRegistry(clientDb)
-	crt, err := tls.LoadX509KeyPair(c.tlsCrt, c.tlsKey)
-	if err != nil {
-		return err
+	var tunnelRegistry registry.TunnelRegistry
+	if c.db == PostgresDbType {
+		clientDb := getDb(c.postgresUrl)
+		tunnelRegistry = registry.NewPostgresTunnelRegistry(clientDb)
+	} else {
+		tunnelRegistry = registry.NewInMemoryTunnelRegistry()
+	}
+	var crts []tls.Certificate
+	if c.tlsCrt != "" && c.tlsKey != "" {
+		crt, err := tls.LoadX509KeyPair(c.tlsCrt, c.tlsKey)
+		if err != nil {
+			return err
+		}
+		crts = append(crts, crt)
 	}
 	serverListener, err := net.Listen("tcp", c.addr)
 	if err != nil {
@@ -71,7 +89,7 @@ func (c *serverCmd) run() error {
 		serverListener,
 		adminListener,
 		c.defaultDomain,
-		[]tls.Certificate{crt},
+		crts,
 	)
 	err = i.Start()
 	if err != nil {
@@ -99,12 +117,10 @@ func NewServerCmd() *cobra.Command {
 	persistentFlags.StringVarP(&c.tlsCrt, "tls-crt", "", "", "Path to a TLS certificate file")
 	persistentFlags.StringVarP(&c.defaultDomain, "default-domain", "", "", "Default domain where the tunnels are hosted")
 	persistentFlags.StringVarP(&c.postgresUrl, "postgres", "", "", "Postgres connection string")
+	persistentFlags.StringVarP(&c.db, "db", "", "", "Type of db")
 
 	cmd.MarkPersistentFlagRequired("addr")
 	cmd.MarkPersistentFlagRequired("tunnel-addr")
 	cmd.MarkPersistentFlagRequired("admin-addr")
-	cmd.MarkPersistentFlagRequired("tls-key")
-	cmd.MarkPersistentFlagRequired("tls-crt")
-	cmd.MarkPersistentFlagRequired("default-domain")
 	return cmd
 }

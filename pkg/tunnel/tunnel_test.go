@@ -230,7 +230,7 @@ func getDb() *gorm.DB {
 func TestTls(t *testing.T) {
 
 	db := getDb()
-	tunnelRegistry := registry.NewTunnelRegistry(db)
+	tunnelRegistry := registry.NewPostgresTunnelRegistry(db)
 	serverListener, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatalf("Err: %v", err)
@@ -320,7 +320,7 @@ func TestTls(t *testing.T) {
 
 func TestHttps(t *testing.T) {
 	clientDb := getDb()
-	tunnelRegistry := registry.NewTunnelRegistry(clientDb)
+	tunnelRegistry := registry.NewPostgresTunnelRegistry(clientDb)
 	serverListener, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatalf("Err: %v", err)
@@ -433,7 +433,7 @@ func benchmarkHttps(n int, b *testing.B) {
 	defer client.Close()
 	defer server.Close()
 	clientDb := getDb()
-	tunnelRegistry := registry.NewTunnelRegistry(clientDb)
+	tunnelRegistry := registry.NewPostgresTunnelRegistry(clientDb)
 	i := &instance{registry: tunnelRegistry}
 	testServer, err := net.Listen("tcp", ":0")
 	if err != nil {
