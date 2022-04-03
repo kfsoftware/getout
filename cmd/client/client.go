@@ -2,7 +2,7 @@ package client
 
 import (
 	"fmt"
-	"github.com/kfsoftware/getout/pkg/client"
+	"github.com/kfsoftware/getout/pkg/tunnel"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"time"
@@ -19,7 +19,7 @@ func (c *clientCmd) validate() error {
 	return nil
 }
 func (c *clientCmd) startTunnel() error {
-	tunnelClient := client.NewTunnelClient(c.tunnel)
+	tunnelClient := tunnel.NewTunnelClient(c.tunnel)
 	remoteAddress := fmt.Sprintf("%s:%d", c.host, c.port)
 	err := tunnelClient.StartTlsTunnel(c.sni, remoteAddress)
 	if err != nil {
