@@ -6,16 +6,17 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"github.com/golang/protobuf/proto"
-	"github.com/hashicorp/yamux"
-	"github.com/kfsoftware/getout/pkg/messages"
-	"github.com/rs/zerolog/log"
-	"github.com/spf13/cobra"
 	"io"
 	"net"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/golang/protobuf/proto"
+	"github.com/hashicorp/yamux"
+	"github.com/kfsoftware/getout/pkg/messages"
+	"github.com/rs/zerolog/log"
+	"github.com/spf13/cobra"
 )
 
 type serverCmd struct {
@@ -101,7 +102,7 @@ func (c *serverCmd) run() error {
 
 		err := http.ListenAndServe(c.adminAddr, nil)
 		if err != nil {
-			log.Error().Msgf("Error listening on %s: %w", c.adminAddr, err)
+			log.Error().Msgf("Error listening on %s: %v", c.adminAddr, err)
 		}
 
 	}()
