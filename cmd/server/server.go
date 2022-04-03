@@ -3,16 +3,14 @@ package server
 import (
 	"bytes"
 	"crypto/tls"
-	"encoding/binary"
-	"encoding/json"
 	"fmt"
+	"github.com/inconshreveable/go-vhost"
 	"io"
 	"net"
-	"net/http"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/hashicorp/yamux"
 	"github.com/kfsoftware/getout/pkg/messages"
 	"github.com/rs/zerolog/log"
@@ -28,18 +26,34 @@ type serverCmd struct {
 func (c *serverCmd) validate() error {
 	return nil
 }
-func (c *serverCmd) run() error {
-	server, err := net.Listen("tcp", c.addr)
+
+func (c serverCmd) returnResponse(initialConn net.Conn, status messages.TunnelStatus) error {
+	log.Debug().Msg("Returning response to client")
+	tunnelResponse := &messages.TunnelResponse{Status: status}
+	err := messages.WriteMsg(initialConn, tunnelResponse)
 	if err != nil {
-		panic(fmt.Errorf("error listening on %s: %w", c.addr, err))
+		return err
 	}
-	defer server.Close()
+	err = initialConn.Close()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+func (c serverCmd) run() error {
+	l, _ := net.Listen("tcp", c.addr)
+	muxTimeout := time.Second * 5
+	// start multiplexing on it
+	mux, err := vhost.NewTLSMuxer(l, muxTimeout)
+	if err != nil {
+		log.Err(err).Msg("failed to create muxer")
+	}
+	log.Debug().Msgf("Starting server %s", c.addr)
 	muxServer, err := net.Listen("tcp", c.tunnelAddr)
 	if err != nil {
 		panic(fmt.Errorf("error listening on %s: %w", c.tunnelAddr, err))
 	}
 	defer muxServer.Close()
-	var sessions []*Session
 	go func() {
 		log.Info().Msgf("tunnel listening on %s", c.tunnelAddr)
 		for {
@@ -56,167 +70,141 @@ func (c *serverCmd) run() error {
 			initialConn, err := sess.Accept()
 			if err != nil {
 				log.Debug().Msgf("client %s disconnected", conn.RemoteAddr().String())
-				continue
-			}
-			var sz int64
-			err = binary.Read(initialConn, binary.LittleEndian, &sz)
-			reqBytes := make([]byte, sz)
-			_, err = initialConn.Read(reqBytes)
-			if err != nil {
-				log.Warn().Msgf("Failed to read initial connection: %v", err)
-				continue
-			}
-			tunnelReq := &messages.TunnelRequest{}
-			err = proto.Unmarshal(reqBytes, tunnelReq)
-			if err != nil {
-				log.Warn().Msgf("Failed to unmarshal tunnel request: %v", err)
-				continue
-			}
-			tlsProps := tunnelReq.GetTls()
-			if tlsProps == nil {
-				log.Warn().Msgf("TLS properties not found in tunnel request")
-				continue
-			}
-			sni := tlsProps.GetSni()
-			for _, session := range sessions {
-				if session.SNI == sni {
-					log.Warn().Msgf("trying to add another connection to SNI %s", sni)
-					return
+				if initialConn != nil {
+					err = c.returnResponse(initialConn, messages.TunnelStatus_ERROR)
+					if err != nil {
+						log.Warn().Msgf("Failed to send response: %v", err)
+					}
 				}
+				continue
 			}
-			sessions = append(sessions, &Session{
-				SNI:        sni,
-				RemoteAddr: conn.RemoteAddr().String(),
-				LocalAddr:  conn.LocalAddr().String(),
-				sess:       sess,
-			})
+			msg := &messages.TunnelRequest{}
+			err = messages.ReadMsgInto(initialConn, msg)
+			if err != nil {
+				log.Debug().Msgf("failed to read message", conn.RemoteAddr().String())
+				err = c.returnResponse(initialConn, messages.TunnelStatus_ERROR)
+				if err != nil {
+					log.Warn().Msgf("Failed to send response: %v", err)
+				}
+				continue
+			}
+
+			sni := msg.GetTls().GetSni()
+			muxListener, err := mux.Listen(sni)
+			if err != nil {
+				if strings.Contains(strings.ToLower(err.Error()), "already bound") {
+					err = c.returnResponse(initialConn, messages.TunnelStatus_ALREADY_EXISTS)
+					if err != nil {
+						log.Warn().Msgf("Failed to send response: %v", err)
+					}
+					continue
+				}
+				log.Err(err).Msgf("failed to listen on %s", sni)
+				continue
+			}
+			log.Debug().Msgf("request: %v", msg)
+			msgResponse := messages.TunnelResponse{Status: messages.TunnelStatus_OK}
+			err = messages.WriteMsg(initialConn, &msgResponse)
+			if err != nil {
+				log.Debug().Msgf("failed to write message", conn.RemoteAddr().String())
+				err = c.returnResponse(initialConn, messages.TunnelStatus_ERROR)
+				if err != nil {
+					log.Warn().Msgf("Failed to send response: %v", err)
+				}
+				continue
+			}
+			err = initialConn.Close()
+			if err != nil {
+				log.Debug().Msgf("failed to close connection", conn.RemoteAddr().String())
+				err = c.returnResponse(initialConn, messages.TunnelStatus_ERROR)
+				if err != nil {
+					log.Warn().Msgf("Failed to send response: %v", err)
+				}
+				continue
+			}
+			go func(ml net.Listener) {
+				for {
+					conn, err := ml.Accept()
+					if err != nil {
+						if strings.Contains(strings.ToLower(err.Error()), "listener closed") {
+							log.Info().Msg("listener closed")
+							return
+						}
+						log.Err(err).Msg("Error accepting connection")
+						continue
+					}
+					destConn, err := sess.Open()
+					if err != nil {
+						conn.Close()
+						log.Warn().Msgf("Connection closed")
+						continue
+					}
+					var wg sync.WaitGroup
+					wg.Add(2)
+					transfer := func(side string, dst, src net.Conn) {
+						log.Debug().Msgf("proxing %s -> %s", src.RemoteAddr(), dst.RemoteAddr())
+						tStart := time.Now()
+
+						n, err := io.Copy(dst, src)
+						if err != nil {
+							log.Error().Msgf("%s: copy error: %s", side, err)
+						}
+
+						if err := src.Close(); err != nil {
+							log.Debug().Msgf("%s: close error: %s", side, err)
+						}
+
+						// not for yamux streams, but for client to local server connections
+						if d, ok := dst.(*net.TCPConn); ok {
+							if err := d.CloseWrite(); err != nil {
+								log.Debug().Msgf("%s: closeWrite error: %s", side, err)
+							}
+						}
+						wg.Done()
+						log.Debug().Msgf("done proxing %s -> %s: %d bytes in %s", src.RemoteAddr(), dst.RemoteAddr(), n, time.Since(tStart))
+					}
+					go transfer("remote to local", conn, destConn)
+					go transfer("local to remote", destConn, conn)
+				}
+			}(muxListener)
+			go func() {
+				for {
+					_, err = sess.Ping()
+					if err != nil {
+						log.Warn().Msgf("Session %s inactive, removing it: %v", sni, err)
+						err = muxListener.Close()
+						if err != nil {
+							log.Err(err).Msg("Close")
+						}
+						break
+					}
+					time.Sleep(2 * time.Second)
+					continue
+				}
+			}()
 		}
 	}()
 	go func() {
-		log.Info().Msgf("admin listening on %s", c.adminAddr)
-		http.HandleFunc("/tunnels", func(writer http.ResponseWriter, request *http.Request) {
-			sessionsBytes, err := json.Marshal(sessions)
-			if err != nil {
-				writer.Header().Set("Content-Type", "application/json")
-				writer.Write([]byte("Error"))
-				return
+		for {
+			conn, err := mux.NextError()
+			switch err.(type) {
+			case vhost.BadRequest:
+				log.Debug().Msgf("got a bad request!")
+			case vhost.NotFound:
+				log.Debug().Msgf("got a connection for an unknown vhost")
+			case vhost.Closed:
+				log.Debug().Msgf("closed conn: %s", err)
+			default:
+				log.Debug().Msgf("Server error")
 			}
-			writer.Header().Set("Content-Type", "application/json")
-			writer.Write(sessionsBytes)
-		})
 
-		err := http.ListenAndServe(c.adminAddr, nil)
-		if err != nil {
-			log.Error().Msgf("Error listening on %s: %v", c.adminAddr, err)
+			if conn != nil {
+				conn.Close()
+			}
 		}
-
 	}()
-	log.Info().Msgf("listening requests %s", c.addr)
-	for {
-		conn, err := server.Accept()
-		if err != nil {
-			panic(err)
-		}
-		log.Debug().Msgf("client %s connected", conn.RemoteAddr().String())
-
-		clientHello, originalConn, err := peekClientHello(conn)
-		if err != nil {
-			connErrClose := conn.Close()
-			if connErrClose != nil {
-				log.Warn().Msgf("Failed to close connection: %v", connErrClose)
-			}
-			log.Error().Msgf("Error extracting client hello %v", err)
-			continue
-		}
-		if clientHello == nil {
-			log.Error().Msgf("client hello is nil %v", err)
-		}
-		_ = originalConn
-		sni := clientHello.ServerName
-		log.Info().Msgf("SNI=%s", sni)
-		if len(sessions) == 0 {
-			conn.Close()
-			continue
-		}
-		var destSess *Session
-		for _, session := range sessions {
-			if session.SNI == sni {
-				destSess = session
-			}
-		}
-		if destSess == nil {
-			log.Warn().Msgf("Session not found")
-			conn.Close()
-			continue
-		}
-		destConn, err := destSess.sess.Open()
-		if err != nil {
-			conn.Close()
-			sessions = RemoveIndex(sessions, 0)
-			log.Warn().Msgf("Connection closed")
-			continue
-		}
-		var wg sync.WaitGroup
-		wg.Add(2)
-		copyConn := func(writer net.Conn, reader net.Conn) {
-			defer func() {
-				log.Trace().Msg("Closing copyConn connections")
-				writer.Close()
-				reader.Close()
-			}()
-			_, err := io.Copy(writer, reader)
-			if err != nil {
-				log.Trace().Msgf("io.Copy error: %s", err)
-			}
-			log.Info().Msgf("Connection finished")
-		}
-		copyStream := func(side string, dst net.Conn, src io.Reader) {
-			log.Debug().Msgf("proxing  -> %s", dst.RemoteAddr())
-			n, err := io.Copy(dst, src)
-			if err != nil {
-				log.Error().Msgf("%s: copy error: %s", side, err)
-			}
-
-			// not for yamux streams, but for client to local server connections
-			if d, ok := dst.(*net.TCPConn); ok {
-				if err := d.CloseWrite(); err != nil {
-					log.Debug().Msgf("%s: closeWrite error: %s", side, err)
-				}
-			}
-			wg.Done()
-			log.Debug().Msgf("done proxing -> %s: %d bytes", dst.RemoteAddr(), n)
-
-		}
-		_ = copyConn
-		_ = copyStream
-
-		transfer := func(side string, dst, src net.Conn) {
-			log.Debug().Msgf("proxing %s -> %s", src.RemoteAddr(), dst.RemoteAddr())
-
-			n, err := io.Copy(dst, src)
-			if err != nil {
-				log.Error().Msgf("%s: copy error: %s", side, err)
-			}
-
-			if err := src.Close(); err != nil {
-				log.Debug().Msgf("%s: close error: %s", side, err)
-			}
-
-			// not for yamux streams, but for client to local server connections
-			if d, ok := dst.(*net.TCPConn); ok {
-				if err := d.CloseWrite(); err != nil {
-					log.Debug().Msgf("%s: closeWrite error: %s", side, err)
-				}
-			}
-			wg.Done()
-			log.Debug().Msgf("done proxing %s -> %s: %d bytes", src.RemoteAddr(), dst.RemoteAddr(), n)
-		}
-
-		go transfer("remote to local", conn, destConn)
-		go copyStream("local to remote", destConn, originalConn)
-	}
+	select {} // block forever
 }
-
 func NewServerCmd() *cobra.Command {
 	c := &serverCmd{}
 	cmd := &cobra.Command{

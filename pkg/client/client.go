@@ -1,11 +1,10 @@
 package client
 
 import (
-	"encoding/binary"
 	"fmt"
-	"github.com/golang/protobuf/proto"
 	"github.com/hashicorp/yamux"
 	"github.com/kfsoftware/getout/pkg/messages"
+	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 	"io"
 	"net"
@@ -46,17 +45,27 @@ func (c *tunnelClient) StartTlsTunnel(sni string, remoteAddress string) error {
 	if err != nil {
 		return err
 	}
-	b, err := proto.Marshal(tunnelReq)
+	err = messages.WriteMsg(initialConn, tunnelReq)
 	if err != nil {
 		return err
 	}
-	err = binary.Write(initialConn, binary.LittleEndian, int64(len(b)))
+	tunnelResponse := &messages.TunnelResponse{}
+	err = messages.ReadMsgInto(initialConn, tunnelResponse)
 	if err != nil {
+		log.Trace().Msgf("Failed to read tunnel response: %v", err)
 		return err
 	}
-	if _, err = initialConn.Write(b); err != nil {
-		return err
+	switch tunnelResponse.Status {
+	case messages.TunnelStatus_ALREADY_EXISTS:
+		return errors.Errorf("Tunnel already exists for SNI: %s", sni)
+	case messages.TunnelStatus_ERROR:
+		return errors.Errorf("error stablishing connection with SNI: %s", sni)
+	case messages.TunnelStatus_OK:
+		// OK
+	default:
+		return errors.Errorf("unknown tunnel status: %s", tunnelResponse.Status)
 	}
+	log.Debug().Msgf("Established initial connection: %v", tunnelResponse)
 	err = initialConn.Close()
 	if err != nil {
 		return err

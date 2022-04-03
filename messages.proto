@@ -12,6 +12,15 @@ message TunnelRequest {
     HttpTunnelRequest http = 2;
   }
 }
+enum TunnelStatus {
+  NOT_USED = 0;
+  ERROR = 1;
+  ALREADY_EXISTS = 2;
+  OK = 3;
+}
+message TunnelResponse {
+  TunnelStatus status = 1;
+}
 
 message TlsTunnelRequest {
   string sni = 1;
