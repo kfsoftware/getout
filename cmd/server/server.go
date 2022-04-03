@@ -72,7 +72,12 @@ func (c *serverCmd) run() error {
 				log.Warn().Msgf("Failed to unmarshal tunnel request: %v", err)
 				continue
 			}
-			sni := tunnelReq.Sni
+			tlsProps := tunnelReq.GetTls()
+			if tlsProps == nil {
+				log.Warn().Msgf("TLS properties not found in tunnel request")
+				continue
+			}
+			sni := tlsProps.GetSni()
 			for _, session := range sessions {
 				if session.SNI == sni {
 					log.Warn().Msgf("trying to add another connection to SNI %s", sni)
@@ -116,11 +121,18 @@ func (c *serverCmd) run() error {
 
 		clientHello, originalConn, err := peekClientHello(conn)
 		if err != nil {
+			err = conn.Close()
+			if err != nil {
+				log.Warn().Msgf("Failed to close connection: %v", err)
+			}
 			log.Error().Msgf("Error extracting client hello %v", err)
+			continue
+		}
+		if clientHello == nil {
+			log.Error().Msgf("client hello is nil %v", err)
 		}
 		_ = originalConn
 		sni := clientHello.ServerName
-		//sni := "localhost"
 		log.Info().Msgf("SNI=%s", sni)
 		if len(sessions) == 0 {
 			conn.Close()

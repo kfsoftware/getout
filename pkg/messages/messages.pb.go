@@ -20,12 +20,61 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type Protocol int32
+
+const (
+	Protocol_TCP  Protocol = 0
+	Protocol_HTTP Protocol = 1
+)
+
+// Enum value maps for Protocol.
+var (
+	Protocol_name = map[int32]string{
+		0: "TCP",
+		1: "HTTP",
+	}
+	Protocol_value = map[string]int32{
+		"TCP":  0,
+		"HTTP": 1,
+	}
+)
+
+func (x Protocol) Enum() *Protocol {
+	p := new(Protocol)
+	*p = x
+	return p
+}
+
+func (x Protocol) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Protocol) Descriptor() protoreflect.EnumDescriptor {
+	return file_messages_proto_enumTypes[0].Descriptor()
+}
+
+func (Protocol) Type() protoreflect.EnumType {
+	return &file_messages_proto_enumTypes[0]
+}
+
+func (x Protocol) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Protocol.Descriptor instead.
+func (Protocol) EnumDescriptor() ([]byte, []int) {
+	return file_messages_proto_rawDescGZIP(), []int{0}
+}
+
 type TunnelRequest struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Sni string `protobuf:"bytes,1,opt,name=sni,proto3" json:"sni,omitempty"`
+	// Types that are assignable to Req:
+	//	*TunnelRequest_Tls
+	//	*TunnelRequest_Http
+	Req isTunnelRequest_Req `protobuf_oneof:"req"`
 }
 
 func (x *TunnelRequest) Reset() {
@@ -60,22 +109,330 @@ func (*TunnelRequest) Descriptor() ([]byte, []int) {
 	return file_messages_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *TunnelRequest) GetSni() string {
+func (m *TunnelRequest) GetReq() isTunnelRequest_Req {
+	if m != nil {
+		return m.Req
+	}
+	return nil
+}
+
+func (x *TunnelRequest) GetTls() *TlsTunnelRequest {
+	if x, ok := x.GetReq().(*TunnelRequest_Tls); ok {
+		return x.Tls
+	}
+	return nil
+}
+
+func (x *TunnelRequest) GetHttp() *HttpTunnelRequest {
+	if x, ok := x.GetReq().(*TunnelRequest_Http); ok {
+		return x.Http
+	}
+	return nil
+}
+
+type isTunnelRequest_Req interface {
+	isTunnelRequest_Req()
+}
+
+type TunnelRequest_Tls struct {
+	Tls *TlsTunnelRequest `protobuf:"bytes,1,opt,name=tls,proto3,oneof"`
+}
+
+type TunnelRequest_Http struct {
+	Http *HttpTunnelRequest `protobuf:"bytes,2,opt,name=http,proto3,oneof"`
+}
+
+func (*TunnelRequest_Tls) isTunnelRequest_Req() {}
+
+func (*TunnelRequest_Http) isTunnelRequest_Req() {}
+
+type TlsTunnelRequest struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Sni string `protobuf:"bytes,1,opt,name=sni,proto3" json:"sni,omitempty"`
+}
+
+func (x *TlsTunnelRequest) Reset() {
+	*x = TlsTunnelRequest{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_messages_proto_msgTypes[1]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *TlsTunnelRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TlsTunnelRequest) ProtoMessage() {}
+
+func (x *TlsTunnelRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_messages_proto_msgTypes[1]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TlsTunnelRequest.ProtoReflect.Descriptor instead.
+func (*TlsTunnelRequest) Descriptor() ([]byte, []int) {
+	return file_messages_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *TlsTunnelRequest) GetSni() string {
 	if x != nil {
 		return x.Sni
 	}
 	return ""
 }
 
+type HttpTunnelRequest struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Host string `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
+}
+
+func (x *HttpTunnelRequest) Reset() {
+	*x = HttpTunnelRequest{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_messages_proto_msgTypes[2]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *HttpTunnelRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HttpTunnelRequest) ProtoMessage() {}
+
+func (x *HttpTunnelRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_messages_proto_msgTypes[2]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HttpTunnelRequest.ProtoReflect.Descriptor instead.
+func (*HttpTunnelRequest) Descriptor() ([]byte, []int) {
+	return file_messages_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *HttpTunnelRequest) GetHost() string {
+	if x != nil {
+		return x.Host
+	}
+	return ""
+}
+
+type TlsTunnel struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Sni string `protobuf:"bytes,1,opt,name=sni,proto3" json:"sni,omitempty"`
+}
+
+func (x *TlsTunnel) Reset() {
+	*x = TlsTunnel{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_messages_proto_msgTypes[3]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *TlsTunnel) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TlsTunnel) ProtoMessage() {}
+
+func (x *TlsTunnel) ProtoReflect() protoreflect.Message {
+	mi := &file_messages_proto_msgTypes[3]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TlsTunnel.ProtoReflect.Descriptor instead.
+func (*TlsTunnel) Descriptor() ([]byte, []int) {
+	return file_messages_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *TlsTunnel) GetSni() string {
+	if x != nil {
+		return x.Sni
+	}
+	return ""
+}
+
+type HttpTunnel struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Host string `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
+}
+
+func (x *HttpTunnel) Reset() {
+	*x = HttpTunnel{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_messages_proto_msgTypes[4]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *HttpTunnel) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HttpTunnel) ProtoMessage() {}
+
+func (x *HttpTunnel) ProtoReflect() protoreflect.Message {
+	mi := &file_messages_proto_msgTypes[4]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HttpTunnel.ProtoReflect.Descriptor instead.
+func (*HttpTunnel) Descriptor() ([]byte, []int) {
+	return file_messages_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *HttpTunnel) GetHost() string {
+	if x != nil {
+		return x.Host
+	}
+	return ""
+}
+
+type Auth struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	User     string            `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
+	Password string            `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
+	Metadata map[string]string `protobuf:"bytes,3,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
+}
+
+func (x *Auth) Reset() {
+	*x = Auth{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_messages_proto_msgTypes[5]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *Auth) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Auth) ProtoMessage() {}
+
+func (x *Auth) ProtoReflect() protoreflect.Message {
+	mi := &file_messages_proto_msgTypes[5]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Auth.ProtoReflect.Descriptor instead.
+func (*Auth) Descriptor() ([]byte, []int) {
+	return file_messages_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *Auth) GetUser() string {
+	if x != nil {
+		return x.User
+	}
+	return ""
+}
+
+func (x *Auth) GetPassword() string {
+	if x != nil {
+		return x.Password
+	}
+	return ""
+}
+
+func (x *Auth) GetMetadata() map[string]string {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
 var File_messages_proto protoreflect.FileDescriptor
 
 var file_messages_proto_rawDesc = []byte{
 	0x0a, 0x0e, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65, 0x73, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f,
-	0x12, 0x08, 0x74, 0x75, 0x74, 0x6f, 0x72, 0x69, 0x61, 0x6c, 0x22, 0x21, 0x0a, 0x0d, 0x54, 0x75,
-	0x6e, 0x6e, 0x65, 0x6c, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x10, 0x0a, 0x03, 0x73,
-	0x6e, 0x69, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x03, 0x73, 0x6e, 0x69, 0x42, 0x0e, 0x5a,
-	0x0c, 0x70, 0x6b, 0x67, 0x2f, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65, 0x73, 0x62, 0x06, 0x70,
-	0x72, 0x6f, 0x74, 0x6f, 0x33,
+	0x12, 0x08, 0x74, 0x75, 0x74, 0x6f, 0x72, 0x69, 0x61, 0x6c, 0x22, 0x79, 0x0a, 0x0d, 0x54, 0x75,
+	0x6e, 0x6e, 0x65, 0x6c, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x2e, 0x0a, 0x03, 0x74,
+	0x6c, 0x73, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x1a, 0x2e, 0x74, 0x75, 0x74, 0x6f, 0x72,
+	0x69, 0x61, 0x6c, 0x2e, 0x54, 0x6c, 0x73, 0x54, 0x75, 0x6e, 0x6e, 0x65, 0x6c, 0x52, 0x65, 0x71,
+	0x75, 0x65, 0x73, 0x74, 0x48, 0x00, 0x52, 0x03, 0x74, 0x6c, 0x73, 0x12, 0x31, 0x0a, 0x04, 0x68,
+	0x74, 0x74, 0x70, 0x18, 0x02, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x1b, 0x2e, 0x74, 0x75, 0x74, 0x6f,
+	0x72, 0x69, 0x61, 0x6c, 0x2e, 0x48, 0x74, 0x74, 0x70, 0x54, 0x75, 0x6e, 0x6e, 0x65, 0x6c, 0x52,
+	0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x48, 0x00, 0x52, 0x04, 0x68, 0x74, 0x74, 0x70, 0x42, 0x05,
+	0x0a, 0x03, 0x72, 0x65, 0x71, 0x22, 0x24, 0x0a, 0x10, 0x54, 0x6c, 0x73, 0x54, 0x75, 0x6e, 0x6e,
+	0x65, 0x6c, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x10, 0x0a, 0x03, 0x73, 0x6e, 0x69,
+	0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x03, 0x73, 0x6e, 0x69, 0x22, 0x27, 0x0a, 0x11, 0x48,
+	0x74, 0x74, 0x70, 0x54, 0x75, 0x6e, 0x6e, 0x65, 0x6c, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74,
+	0x12, 0x12, 0x0a, 0x04, 0x68, 0x6f, 0x73, 0x74, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x04,
+	0x68, 0x6f, 0x73, 0x74, 0x22, 0x1d, 0x0a, 0x09, 0x54, 0x6c, 0x73, 0x54, 0x75, 0x6e, 0x6e, 0x65,
+	0x6c, 0x12, 0x10, 0x0a, 0x03, 0x73, 0x6e, 0x69, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x03,
+	0x73, 0x6e, 0x69, 0x22, 0x20, 0x0a, 0x0a, 0x48, 0x74, 0x74, 0x70, 0x54, 0x75, 0x6e, 0x6e, 0x65,
+	0x6c, 0x12, 0x12, 0x0a, 0x04, 0x68, 0x6f, 0x73, 0x74, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52,
+	0x04, 0x68, 0x6f, 0x73, 0x74, 0x22, 0xad, 0x01, 0x0a, 0x04, 0x41, 0x75, 0x74, 0x68, 0x12, 0x12,
+	0x0a, 0x04, 0x75, 0x73, 0x65, 0x72, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x04, 0x75, 0x73,
+	0x65, 0x72, 0x12, 0x1a, 0x0a, 0x08, 0x70, 0x61, 0x73, 0x73, 0x77, 0x6f, 0x72, 0x64, 0x18, 0x02,
+	0x20, 0x01, 0x28, 0x09, 0x52, 0x08, 0x70, 0x61, 0x73, 0x73, 0x77, 0x6f, 0x72, 0x64, 0x12, 0x38,
+	0x0a, 0x08, 0x6d, 0x65, 0x74, 0x61, 0x64, 0x61, 0x74, 0x61, 0x18, 0x03, 0x20, 0x03, 0x28, 0x0b,
+	0x32, 0x1c, 0x2e, 0x74, 0x75, 0x74, 0x6f, 0x72, 0x69, 0x61, 0x6c, 0x2e, 0x41, 0x75, 0x74, 0x68,
+	0x2e, 0x4d, 0x65, 0x74, 0x61, 0x64, 0x61, 0x74, 0x61, 0x45, 0x6e, 0x74, 0x72, 0x79, 0x52, 0x08,
+	0x6d, 0x65, 0x74, 0x61, 0x64, 0x61, 0x74, 0x61, 0x1a, 0x3b, 0x0a, 0x0d, 0x4d, 0x65, 0x74, 0x61,
+	0x64, 0x61, 0x74, 0x61, 0x45, 0x6e, 0x74, 0x72, 0x79, 0x12, 0x10, 0x0a, 0x03, 0x6b, 0x65, 0x79,
+	0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x03, 0x6b, 0x65, 0x79, 0x12, 0x14, 0x0a, 0x05, 0x76,
+	0x61, 0x6c, 0x75, 0x65, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x05, 0x76, 0x61, 0x6c, 0x75,
+	0x65, 0x3a, 0x02, 0x38, 0x01, 0x2a, 0x1d, 0x0a, 0x08, 0x50, 0x72, 0x6f, 0x74, 0x6f, 0x63, 0x6f,
+	0x6c, 0x12, 0x07, 0x0a, 0x03, 0x54, 0x43, 0x50, 0x10, 0x00, 0x12, 0x08, 0x0a, 0x04, 0x48, 0x54,
+	0x54, 0x50, 0x10, 0x01, 0x42, 0x0e, 0x5a, 0x0c, 0x70, 0x6b, 0x67, 0x2f, 0x6d, 0x65, 0x73, 0x73,
+	0x61, 0x67, 0x65, 0x73, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
 }
 
 var (
@@ -90,16 +447,27 @@ func file_messages_proto_rawDescGZIP() []byte {
 	return file_messages_proto_rawDescData
 }
 
-var file_messages_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_messages_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_messages_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_messages_proto_goTypes = []interface{}{
-	(*TunnelRequest)(nil), // 0: tutorial.TunnelRequest
+	(Protocol)(0),             // 0: tutorial.Protocol
+	(*TunnelRequest)(nil),     // 1: tutorial.TunnelRequest
+	(*TlsTunnelRequest)(nil),  // 2: tutorial.TlsTunnelRequest
+	(*HttpTunnelRequest)(nil), // 3: tutorial.HttpTunnelRequest
+	(*TlsTunnel)(nil),         // 4: tutorial.TlsTunnel
+	(*HttpTunnel)(nil),        // 5: tutorial.HttpTunnel
+	(*Auth)(nil),              // 6: tutorial.Auth
+	nil,                       // 7: tutorial.Auth.MetadataEntry
 }
 var file_messages_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	2, // 0: tutorial.TunnelRequest.tls:type_name -> tutorial.TlsTunnelRequest
+	3, // 1: tutorial.TunnelRequest.http:type_name -> tutorial.HttpTunnelRequest
+	7, // 2: tutorial.Auth.metadata:type_name -> tutorial.Auth.MetadataEntry
+	3, // [3:3] is the sub-list for method output_type
+	3, // [3:3] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_messages_proto_init() }
@@ -120,19 +488,84 @@ func file_messages_proto_init() {
 				return nil
 			}
 		}
+		file_messages_proto_msgTypes[1].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*TlsTunnelRequest); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_messages_proto_msgTypes[2].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*HttpTunnelRequest); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_messages_proto_msgTypes[3].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*TlsTunnel); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_messages_proto_msgTypes[4].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*HttpTunnel); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_messages_proto_msgTypes[5].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*Auth); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+	}
+	file_messages_proto_msgTypes[0].OneofWrappers = []interface{}{
+		(*TunnelRequest_Tls)(nil),
+		(*TunnelRequest_Http)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_messages_proto_rawDesc,
-			NumEnums:      0,
-			NumMessages:   1,
+			NumEnums:      1,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_messages_proto_goTypes,
 		DependencyIndexes: file_messages_proto_depIdxs,
+		EnumInfos:         file_messages_proto_enumTypes,
 		MessageInfos:      file_messages_proto_msgTypes,
 	}.Build()
 	File_messages_proto = out.File

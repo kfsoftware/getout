@@ -36,7 +36,11 @@ func (c *tunnelClient) StartTlsTunnel(sni string, remoteAddress string) error {
 		return err
 	}
 	tunnelReq := &messages.TunnelRequest{
-		Sni: sni,
+		Req: &messages.TunnelRequest_Tls{
+			Tls: &messages.TlsTunnelRequest{
+				Sni: sni,
+			},
+		},
 	}
 	initialConn, err := session.Open()
 	if err != nil {
