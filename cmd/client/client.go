@@ -4,10 +4,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/hashicorp/yamux"
-	log "github.com/schollz/logger"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"io"
 	"net"
+	"sync"
+	"time"
 )
 
 type clientCmd struct {
@@ -20,40 +22,27 @@ type clientCmd struct {
 func (c *clientCmd) validate() error {
 	return nil
 }
-func (c *clientCmd) run() error {
-	conn, err := net.Dial("tcp", c.tunnel)
-	if err != nil {
-		panic(err)
-	}
-	session, err := yamux.Client(conn, nil)
-	if err != nil {
-		panic(err)
-	}
-	initialConn, err := session.Open()
-	if err != nil {
-		panic(err)
-	}
-	buffer := []byte(c.sni)
-	err = binary.Write(initialConn, binary.LittleEndian, int64(len(buffer)))
-	if err != nil {
-		panic(err)
-	}
-	if _, err = initialConn.Write(buffer); err != nil {
-		return err
-	}
-	initialConn.Close()
-	log.Infof("Connection established, waiting for connections..")
+func startTunnel(session *yamux.Session, remoteAddress string) error {
 	for {
 		conn, err := session.Accept()
 		if err != nil {
-			log.Tracef("Failed to accept connections: %v", err)
+			log.Trace().Msgf("Failed to accept connections: %v", err)
 			return err
 		}
-		destConn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", c.host, c.port))
+		destConn, err := net.DialTimeout("tcp", remoteAddress, time.Second*5)
 		if err != nil {
-			panic(err)
+			log.Trace().Msgf("Failed to connect to remote address: %v", err)
+			conn.Write([]byte("Failed to connect to remote address"))
+			connCloseErr := conn.Close()
+			if connCloseErr != nil {
+				log.Trace().Msgf("Failed to close connection: %v", connCloseErr)
+			}
+			if destConn != nil {
+				destConn.Close()
+			}
+			return err
 		}
-		log.Debugf("client %s connected", conn.RemoteAddr().String())
+		log.Debug().Msgf("client %s connected", conn.RemoteAddr().String())
 		copyConn := func(writer, reader net.Conn) {
 			defer writer.Close()
 			defer reader.Close()
@@ -61,12 +50,96 @@ func (c *clientCmd) run() error {
 			if err != nil {
 				fmt.Printf("io.Copy error: %s", err)
 			}
-			log.Infof("Connection finished")
+			log.Info().Msgf("Connection finished")
+		}
+		_ = copyConn
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		transfer := func(side string, dst, src net.Conn) {
+			log.Debug().Msgf("proxing %s -> %s", src.RemoteAddr(), dst.RemoteAddr())
+
+			n, err := io.Copy(dst, src)
+			if err != nil {
+				log.Error().Msgf("%s: copy error: %s", side, err)
+			}
+
+			if err := src.Close(); err != nil {
+				log.Debug().Msgf("%s: close error: %s", side, err)
+			}
+
+			// not for yamux streams, but for client to local server connections
+			if d, ok := dst.(*net.TCPConn); ok {
+				if err := d.CloseWrite(); err != nil {
+					log.Debug().Msgf("%s: closeWrite error: %s", side, err)
+				}
+
+			}
+			wg.Done()
+			log.Debug().Msgf("done proxing %s -> %s: %d bytes", src.RemoteAddr(), dst.RemoteAddr(), n)
 		}
 
-		go copyConn(conn, destConn)
-		go copyConn(destConn, conn)
+		go transfer("remote to local", conn, destConn)
+		go transfer("local to remote", destConn, conn)
+
+		//wg.Wait()
+		//go copyConn(conn, destConn)
+		//go copyConn(destConn, conn)
 	}
+}
+func (c *clientCmd) setupInitialConn() (*yamux.Session, error) {
+	conn, err := net.Dial("tcp", c.tunnel)
+	if err != nil {
+		log.Trace().Msgf("Failed to connect to tunnel: %v", err)
+		return nil, err
+	}
+	session, err := yamux.Client(conn, nil)
+	if err != nil {
+		log.Trace().Msgf("Failed to create yamux session: %v", err)
+		return nil, err
+	}
+	initialConn, err := session.Open()
+	if err != nil {
+		log.Trace().Msgf("Failed to open initial connection: %v", err)
+		return nil, err
+	}
+	buffer := []byte(c.sni)
+	err = binary.Write(initialConn, binary.LittleEndian, int64(len(buffer)))
+	if err != nil {
+		log.Trace().Msgf("Failed to write length of sni: %v", err)
+		return nil, err
+	}
+	if _, err = initialConn.Write(buffer); err != nil {
+		return nil, err
+	}
+	err = initialConn.Close()
+	if err != nil {
+		return nil, err
+	}
+	log.Info().Msgf("Connection established, waiting for connections..")
+	return session, nil
+}
+func (c *clientCmd) run() error {
+	remoteAddress := fmt.Sprintf("%s:%d", c.host, c.port)
+	for {
+		session, err := c.setupInitialConn()
+		if err != nil {
+			log.Error().Msgf("Failed to start tunnel: %v retrying in %v", err, 5*time.Second)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		err = startTunnel(session, remoteAddress)
+		if err != nil {
+			log.Error().Msgf("Failed to start tunnel: %v retrying in %v", err, 5*time.Second)
+			time.Sleep(5 * time.Second)
+			continue
+		} else {
+			log.Info().Msgf("Tunnel started")
+			break
+		}
+
+	}
+	return nil
 }
 func NewClientCmd() *cobra.Command {
 	c := &clientCmd{}

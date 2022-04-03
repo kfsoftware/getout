@@ -4,19 +4,22 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"github.com/hashicorp/yamux"
-	log "github.com/schollz/logger"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"io"
 	"net"
+	"net/http"
+	"sync"
 	"time"
 )
 
 type serverCmd struct {
 	tunnelAddr string
+	adminAddr  string
 	addr       string
-
 }
 
 func (c *serverCmd) validate() error {
@@ -33,15 +36,21 @@ func (c *serverCmd) run() error {
 		panic(fmt.Errorf("error listening on %s: %w", c.tunnelAddr, err))
 	}
 	defer muxServer.Close()
+	//adminServer, err := net.Listen("tcp", c.adminAddr)
+	//if err != nil {
+	//	panic(fmt.Errorf("error listening on %s: %w", c.tunnelAddr, err))
+	//}
+	//defer adminServer.Close()
 	var sessions []*Session
 	go func() {
+		log.Info().Msgf("tunnel listening on %s", c.tunnelAddr)
 		for {
 			conn, err := muxServer.Accept()
 			if err != nil {
-				log.Warnf("Connection closed")
+				log.Warn().Msgf("Connection closed")
 				return
 			}
-			log.Debugf("client %s connected", conn.RemoteAddr().String())
+			log.Debug().Msgf("client %s connected", conn.RemoteAddr().String())
 			sess, err := yamux.Server(conn, nil)
 			if err != nil {
 				panic(err)
@@ -54,41 +63,65 @@ func (c *serverCmd) run() error {
 			err = binary.Read(initialConn, binary.LittleEndian, &sz)
 			sni := make([]byte, sz)
 			n, err := initialConn.Read(sni)
-			log.Debugf("Read message %s %d", sni, n)
+			log.Debug().Msgf("Read message %s %d", sni, n)
 			if err != nil {
 				panic(err)
 			}
 			sessions = append(sessions, &Session{
-				sni:  string(sni),
-				sess: sess,
+				SNI:        string(sni),
+				RemoteAddr: conn.RemoteAddr().String(),
+				LocalAddr:  conn.LocalAddr().String(),
+				sess:       sess,
 			})
 		}
 	}()
+	go func() {
+		log.Info().Msgf("admin listening on %s", c.adminAddr)
+		http.HandleFunc("/tunnels", func(writer http.ResponseWriter, request *http.Request) {
+			sessionsBytes, err := json.Marshal(sessions)
+			if err != nil {
+				writer.Header().Set("Content-Type", "application/json")
+				writer.Write([]byte("Error"))
+				return
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			writer.Write(sessionsBytes)
+		})
+
+		err := http.ListenAndServe(c.adminAddr, nil)
+		if err != nil {
+			log.Error().Msgf("Error listening on %s: %w", c.adminAddr, err)
+		}
+
+	}()
 	for {
+		log.Info().Msgf("listening requests %s", c.addr)
 		conn, err := server.Accept()
 		if err != nil {
 			panic(err)
 		}
-		log.Debugf("client %s connected", conn.RemoteAddr().String())
+		log.Debug().Msgf("client %s connected", conn.RemoteAddr().String())
 
 		clientHello, originalConn, err := peekClientHello(conn)
 		if err != nil {
-			log.Errorf("Error extracting client hello %v", err)
+			log.Error().Msgf("Error extracting client hello %v", err)
 		}
+		_ = originalConn
 		sni := clientHello.ServerName
-		log.Infof("SNI=%s", sni)
+		//sni := "localhost"
+		log.Info().Msgf("SNI=%s", sni)
 		if len(sessions) == 0 {
 			conn.Close()
 			continue
 		}
 		var destSess *Session
 		for _, session := range sessions {
-			if session.sni == sni {
+			if session.SNI == sni {
 				destSess = session
 			}
 		}
 		if destSess == nil {
-			log.Warnf("Session not found")
+			log.Warn().Msgf("Session not found")
 			conn.Close()
 			continue
 		}
@@ -96,29 +129,67 @@ func (c *serverCmd) run() error {
 		if err != nil {
 			conn.Close()
 			sessions = RemoveIndex(sessions, 0)
-			log.Warnf("Connection closed")
+			log.Warn().Msgf("Connection closed")
 			continue
 		}
+		var wg sync.WaitGroup
+		wg.Add(2)
 		copyConn := func(writer net.Conn, reader net.Conn) {
-			defer writer.Close()
-			defer reader.Close()
+			defer func() {
+				log.Trace().Msg("Closing copyConn connections")
+				writer.Close()
+				reader.Close()
+			}()
 			_, err := io.Copy(writer, reader)
 			if err != nil {
-				log.Tracef("io.Copy error: %s", err)
+				log.Trace().Msgf("io.Copy error: %s", err)
 			}
-			log.Infof("Connection finished")
+			log.Info().Msgf("Connection finished")
 		}
-		copyStream := func(writer net.Conn, reader io.Reader) {
-			defer writer.Close()
-			_, err := io.Copy(writer, reader)
+		copyStream := func(side string, dst net.Conn, src io.Reader) {
+			log.Debug().Msgf("proxing  -> %s", dst.RemoteAddr())
+			n, err := io.Copy(dst, src)
 			if err != nil {
-				log.Tracef("io.Copy error: %s", err)
+				log.Error().Msgf("%s: copy error: %s", side, err)
 			}
-			log.Infof("Connection finished")
+
+			// not for yamux streams, but for client to local server connections
+			if d, ok := dst.(*net.TCPConn); ok {
+				if err := d.CloseWrite(); err != nil {
+					log.Debug().Msgf("%s: closeWrite error: %s", side, err)
+				}
+			}
+			wg.Done()
+			log.Debug().Msgf("done proxing -> %s: %d bytes", dst.RemoteAddr(), n)
+
+		}
+		_ = copyConn
+		_ = copyStream
+
+		transfer := func(side string, dst, src net.Conn) {
+			log.Debug().Msgf("proxing %s -> %s", src.RemoteAddr(), dst.RemoteAddr())
+
+			n, err := io.Copy(dst, src)
+			if err != nil {
+				log.Error().Msgf("%s: copy error: %s", side, err)
+			}
+
+			if err := src.Close(); err != nil {
+				log.Debug().Msgf("%s: close error: %s", side, err)
+			}
+
+			// not for yamux streams, but for client to local server connections
+			if d, ok := dst.(*net.TCPConn); ok {
+				if err := d.CloseWrite(); err != nil {
+					log.Debug().Msgf("%s: closeWrite error: %s", side, err)
+				}
+			}
+			wg.Done()
+			log.Debug().Msgf("done proxing %s -> %s: %d bytes", src.RemoteAddr(), dst.RemoteAddr(), n)
 		}
 
-		go copyStream(destConn, originalConn)
-		go copyConn(conn, destConn)
+		go transfer("remote to local", conn, destConn)
+		go copyStream("local to remote", destConn, originalConn)
 	}
 }
 
@@ -133,18 +204,22 @@ func NewServerCmd() *cobra.Command {
 			return c.run()
 		},
 	}
-	persistentFlags := cmd.PersistentFlags()
+	persistentFlags := cmd.Flags()
 	persistentFlags.StringVarP(&c.addr, "addr", "", "", "Address to listen for requests")
 	persistentFlags.StringVarP(&c.tunnelAddr, "tunnel-addr", "", "", "Address to manage the tunnel connections")
+	persistentFlags.StringVarP(&c.adminAddr, "admin-addr", "", "127.0.0.1:8003", "Address for admin utilities")
 
 	cmd.MarkPersistentFlagRequired("addr")
 	cmd.MarkPersistentFlagRequired("tunnel-addr")
+	cmd.MarkPersistentFlagRequired("admin-addr")
 	return cmd
 }
 
 type Session struct {
-	sni  string
-	sess *yamux.Session
+	SNI        string `json:"sni"`
+	RemoteAddr string `json:"remoteAddr"`
+	sess       *yamux.Session
+	LocalAddr  string `json:"localAddr"`
 }
 
 func RemoveIndex(s []*Session, index int) []*Session {
