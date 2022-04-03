@@ -1,28 +1,71 @@
 package client
 
 import (
+	"encoding/binary"
 	"fmt"
+	"github.com/golang/protobuf/proto"
 	"github.com/hashicorp/yamux"
-	"github.com/kfsoftware/getout/pkg/client"
+	"github.com/kfsoftware/getout/pkg/messages"
 	"github.com/rs/zerolog/log"
-	"github.com/spf13/cobra"
 	"io"
 	"net"
 	"sync"
 	"time"
 )
 
-type clientCmd struct {
-	sni    string
-	port   int
-	tunnel string
-	host   string
+func NewTunnelClient(tunnelAddress string) *tunnelClient {
+	return &tunnelClient{
+		tunnelAddress: tunnelAddress,
+	}
 }
 
-func (c *clientCmd) validate() error {
+type tunnelClient struct {
+	tunnelAddress string
+}
+
+func (c *tunnelClient) StartTlsTunnel(sni string, remoteAddress string) error {
+	log.Debug().Msgf("Starting TLS tunnel to %s", c.tunnelAddress)
+	conn, err := net.Dial("tcp", c.tunnelAddress)
+	if err != nil {
+		log.Trace().Msgf("Failed to connect to tunnel: %v", err)
+		return err
+	}
+	session, err := yamux.Client(conn, nil)
+	if err != nil {
+		log.Trace().Msgf("Failed to create yamux session: %v", err)
+		return err
+	}
+	tunnelReq := &messages.TunnelRequest{
+		Sni: sni,
+	}
+	initialConn, err := session.Open()
+	if err != nil {
+		return err
+	}
+	b, err := proto.Marshal(tunnelReq)
+	if err != nil {
+		return err
+	}
+	err = binary.Write(initialConn, binary.LittleEndian, int64(len(b)))
+	if err != nil {
+		return err
+	}
+	if _, err = initialConn.Write(b); err != nil {
+		return err
+	}
+	err = initialConn.Close()
+	if err != nil {
+		return err
+	}
+	err = c.startSNIProxy(session, remoteAddress)
+	if err != nil {
+		return err
+	}
 	return nil
 }
-func startTunnel(session *yamux.Session, remoteAddress string) error {
+
+func (c tunnelClient) startSNIProxy(session *yamux.Session, remoteAddress string) error {
+	log.Debug().Msgf("Starting SNI proxy for %s", remoteAddress)
 	for {
 		conn, err := session.Accept()
 		if err != nil {
@@ -82,50 +125,4 @@ func startTunnel(session *yamux.Session, remoteAddress string) error {
 		go transfer("remote to local", conn, destConn)
 		go transfer("local to remote", destConn, conn)
 	}
-}
-func (c *clientCmd) startTunnel() error {
-	tunnelClient := client.NewTunnelClient(c.tunnel)
-	remoteAddress := fmt.Sprintf("%s:%d", c.host, c.port)
-	err := tunnelClient.StartTlsTunnel(c.sni, remoteAddress)
-	if err != nil {
-		log.Trace().Msgf("Failed to start tls tunnel: %v", err)
-		return err
-	}
-	log.Info().Msgf("Connection established, waiting for connections..")
-	return nil
-}
-func (c *clientCmd) run() error {
-	for {
-		err := c.startTunnel()
-		if err != nil {
-			log.Error().Msgf("Failed to start tunnel: %v retrying in %v", err, 5*time.Second)
-			time.Sleep(5 * time.Second)
-			continue
-		} else {
-			log.Info().Msgf("Tunnel started")
-			break
-		}
-	}
-	return nil
-}
-func NewClientCmd() *cobra.Command {
-	c := &clientCmd{}
-	cmd := &cobra.Command{
-		Use: "client",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := c.validate(); err != nil {
-				return err
-			}
-			return c.run()
-		},
-	}
-	persistentFlags := cmd.PersistentFlags()
-	persistentFlags.StringVarP(&c.sni, "sni", "", "", "SNI Host to listen for")
-	persistentFlags.StringVarP(&c.tunnel, "tunnel", "", "tunnel.arise.kungfusoftware.es:8082", "Tunnel to connect to")
-	persistentFlags.IntVarP(&c.port, "port", "", 0, "Local port to redirect to")
-	persistentFlags.StringVarP(&c.host, "host", "", "localhost", "Local host to redirect to")
-
-	cmd.MarkPersistentFlagRequired("sni")
-	cmd.MarkPersistentFlagRequired("port")
-	return cmd
 }

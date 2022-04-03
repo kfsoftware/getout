@@ -6,7 +6,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"github.com/golang/protobuf/proto"
 	"github.com/hashicorp/yamux"
+	"github.com/kfsoftware/getout/pkg/messages"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"io"
@@ -36,11 +38,6 @@ func (c *serverCmd) run() error {
 		panic(fmt.Errorf("error listening on %s: %w", c.tunnelAddr, err))
 	}
 	defer muxServer.Close()
-	//adminServer, err := net.Listen("tcp", c.adminAddr)
-	//if err != nil {
-	//	panic(fmt.Errorf("error listening on %s: %w", c.tunnelAddr, err))
-	//}
-	//defer adminServer.Close()
 	var sessions []*Session
 	go func() {
 		log.Info().Msgf("tunnel listening on %s", c.tunnelAddr)
@@ -57,18 +54,32 @@ func (c *serverCmd) run() error {
 			}
 			initialConn, err := sess.Accept()
 			if err != nil {
-				panic(err)
+				log.Debug().Msgf("client %s disconnected", conn.RemoteAddr().String())
+				continue
 			}
 			var sz int64
 			err = binary.Read(initialConn, binary.LittleEndian, &sz)
-			sni := make([]byte, sz)
-			n, err := initialConn.Read(sni)
-			log.Debug().Msgf("Read message %s %d", sni, n)
+			reqBytes := make([]byte, sz)
+			_, err = initialConn.Read(reqBytes)
 			if err != nil {
-				panic(err)
+				log.Warn().Msgf("Failed to read initial connection: %v", err)
+				continue
+			}
+			tunnelReq := &messages.TunnelRequest{}
+			err = proto.Unmarshal(reqBytes, tunnelReq)
+			if err != nil {
+				log.Warn().Msgf("Failed to unmarshal tunnel request: %v", err)
+				continue
+			}
+			sni := tunnelReq.Sni
+			for _, session := range sessions {
+				if session.SNI == sni {
+					log.Warn().Msgf("trying to add another connection to SNI %s", sni)
+					return
+				}
 			}
 			sessions = append(sessions, &Session{
-				SNI:        string(sni),
+				SNI:        sni,
 				RemoteAddr: conn.RemoteAddr().String(),
 				LocalAddr:  conn.LocalAddr().String(),
 				sess:       sess,
