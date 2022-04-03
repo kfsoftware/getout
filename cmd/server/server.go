@@ -1,19 +1,20 @@
 package server
 
 import (
-	"bytes"
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"github.com/hashicorp/yamux"
-	"github.com/rs/zerolog/log"
-	"github.com/spf13/cobra"
-	"io"
 	"net"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/hashicorp/yamux"
+	"github.com/rs/zerolog/log"
+	"github.com/spf13/cobra"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 type serverCmd struct {
@@ -25,15 +26,37 @@ type serverCmd struct {
 func (c *serverCmd) validate() error {
 	return nil
 }
-func (c *serverCmd) run() error {
-	server, err := net.Listen("tcp", c.addr)
+func getDb(datasourceName string) *gorm.DB {
+	os.Setenv("TZ", "UTC")
+	gormConfig := &gorm.Config{}
+	dbClient, err := gorm.Open(
+		postgres.New(
+			postgres.Config{
+				DSN:                  datasourceName,
+				PreferSimpleProtocol: true,
+			},
+		),
+		gormConfig,
+	)
 	if err != nil {
-		panic(fmt.Errorf("error listening on %s: %w", c.addr, err))
+		panic(err)
 	}
-	defer server.Close()
-	muxServer, err := net.Listen("tcp", c.tunnelAddr)
+	err = dbClient.AutoMigrate(&db.Tunnel{})
 	if err != nil {
-		panic(fmt.Errorf("error listening on %s: %w", c.tunnelAddr, err))
+		panic(err)
+	}
+	return dbClient
+}
+func (c *serverCmd) run() error {
+	clientDb := getDb(c.postgresUrl)
+	tunnelRegistry := registry.NewTunnelRegistry(clientDb)
+	crt, err := tls.LoadX509KeyPair(c.tlsCrt, c.tlsKey)
+	if err != nil {
+		return err
+	}
+	serverListener, err := net.Listen("tcp", c.addr)
+	if err != nil {
+		return err
 	}
 	defer muxServer.Close()
 	//adminServer, err := net.Listen("tcp", c.adminAddr)
@@ -191,6 +214,23 @@ func (c *serverCmd) run() error {
 		go transfer("remote to local", conn, destConn)
 		go copyStream("local to remote", destConn, originalConn)
 	}
+	adminListener, err := net.Listen("tcp", c.adminAddr)
+	if err != nil {
+		return err
+	}
+	i := tunnel.NewTunnelServerInstance(
+		tunnelRegistry,
+		tunnelListener,
+		serverListener,
+		adminListener,
+		c.defaultDomain,
+		[]tls.Certificate{crt},
+	)
+	err = i.Start()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func NewServerCmd() *cobra.Command {
