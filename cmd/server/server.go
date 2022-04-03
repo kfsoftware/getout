@@ -111,8 +111,8 @@ func (c *serverCmd) run() error {
 		}
 
 	}()
+	log.Info().Msgf("listening requests %s", c.addr)
 	for {
-		log.Info().Msgf("listening requests %s", c.addr)
 		conn, err := server.Accept()
 		if err != nil {
 			panic(err)
@@ -121,9 +121,9 @@ func (c *serverCmd) run() error {
 
 		clientHello, originalConn, err := peekClientHello(conn)
 		if err != nil {
-			err = conn.Close()
-			if err != nil {
-				log.Warn().Msgf("Failed to close connection: %v", err)
+			connErrClose := conn.Close()
+			if connErrClose != nil {
+				log.Warn().Msgf("Failed to close connection: %v", connErrClose)
 			}
 			log.Error().Msgf("Error extracting client hello %v", err)
 			continue
