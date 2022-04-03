@@ -48,7 +48,7 @@ func startTunnel(session *yamux.Session, remoteAddress string) error {
 			defer reader.Close()
 			_, err := io.Copy(writer, reader)
 			if err != nil {
-				log.Warnf("io.Copy error: %s", err)
+				fmt.Printf("io.Copy error: %s", err)
 			}
 			log.Info().Msgf("Connection finished")
 		}
@@ -142,9 +142,23 @@ func (c *clientCmd) run() error {
 	return nil
 }
 func NewClientCmd() *cobra.Command {
+	c := &clientCmd{}
 	cmd := &cobra.Command{
 		Use: "client",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := c.validate(); err != nil {
+				return err
+			}
+			return c.run()
+		},
 	}
-	cmd.AddCommand(newHttpCmd(), newHttpsCmd(), newTlsCmd())
+	persistentFlags := cmd.PersistentFlags()
+	persistentFlags.StringVarP(&c.sni, "sni", "", "", "SNI Host to listen for")
+	persistentFlags.StringVarP(&c.tunnel, "tunnel", "", "tunnel.arise.kungfusoftware.es:8082", "Tunnel to connect to")
+	persistentFlags.IntVarP(&c.port, "port", "", 0, "Local port to redirect to")
+	persistentFlags.StringVarP(&c.host, "host", "", "localhost", "Local host to redirect to")
+
+	cmd.MarkPersistentFlagRequired("sni")
+	cmd.MarkPersistentFlagRequired("port")
 	return cmd
 }
