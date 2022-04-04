@@ -137,6 +137,8 @@ func (c serverCmd) run() error {
 				for {
 					conn, err := ml.Accept()
 					if err != nil {
+						_ = muxListener.Close()
+						delete(sessions, sni)
 						if strings.Contains(strings.ToLower(err.Error()), "listener closed") {
 							log.Info().Msg("listener closed")
 							return
