@@ -1,9 +1,8 @@
 package server
 
 import (
-	"bytes"
-	"crypto/tls"
 	"fmt"
+	"github.com/gin-gonic/gin"
 	"github.com/inconshreveable/go-vhost"
 	"io"
 	"net"
@@ -53,7 +52,10 @@ func (c serverCmd) run() error {
 	if err != nil {
 		panic(fmt.Errorf("error listening on %s: %w", c.tunnelAddr, err))
 	}
-	defer muxServer.Close()
+	defer func(muxServer net.Listener) {
+		_ = muxServer.Close()
+	}(muxServer)
+	sessions := map[string]Session{}
 	go func() {
 		log.Info().Msgf("tunnel listening on %s", c.tunnelAddr)
 		for {
@@ -102,6 +104,11 @@ func (c serverCmd) run() error {
 				log.Err(err).Msgf("failed to listen on %s", sni)
 				continue
 			}
+			sessions[sni] = Session{
+				SNI:        sni,
+				RemoteAddr: conn.RemoteAddr().String(),
+				LocalAddr:  muxListener.Addr().String(),
+			}
 			log.Debug().Msgf("request: %v", msg)
 			msgResponse := messages.TunnelResponse{Status: messages.TunnelStatus_OK}
 			err = messages.WriteMsg(initialConn, &msgResponse)
@@ -135,7 +142,7 @@ func (c serverCmd) run() error {
 					}
 					destConn, err := sess.Open()
 					if err != nil {
-						conn.Close()
+						_ = conn.Close()
 						log.Warn().Msgf("Connection closed")
 						continue
 					}
@@ -176,12 +183,24 @@ func (c serverCmd) run() error {
 						if err != nil {
 							log.Err(err).Msg("Close")
 						}
+						delete(sessions, sni)
 						break
 					}
 					time.Sleep(2 * time.Second)
 					continue
 				}
 			}()
+		}
+	}()
+	go func() {
+		r := gin.Default()
+		r.GET("/tunnels", func(c *gin.Context) {
+			c.JSON(200, sessions)
+		})
+		log.Info().Msgf("admin server listening on %s", c.adminAddr)
+		err := r.Run(c.adminAddr)
+		if err != nil {
+			log.Error().Msgf("failed to listen on address: %s %v", c.adminAddr, err)
 		}
 	}()
 	go func() {
@@ -199,7 +218,7 @@ func (c serverCmd) run() error {
 			}
 
 			if conn != nil {
-				conn.Close()
+				_ = conn.Close()
 			}
 		}
 	}()
@@ -221,59 +240,14 @@ func NewServerCmd() *cobra.Command {
 	persistentFlags.StringVarP(&c.tunnelAddr, "tunnel-addr", "", "", "Address to manage the tunnel connections")
 	persistentFlags.StringVarP(&c.adminAddr, "admin-addr", "", "127.0.0.1:8003", "Address for admin utilities")
 
-	cmd.MarkPersistentFlagRequired("addr")
-	cmd.MarkPersistentFlagRequired("tunnel-addr")
-	cmd.MarkPersistentFlagRequired("admin-addr")
+	_ = cmd.MarkPersistentFlagRequired("addr")
+	_ = cmd.MarkPersistentFlagRequired("tunnel-addr")
+	_ = cmd.MarkPersistentFlagRequired("admin-addr")
 	return cmd
 }
 
 type Session struct {
 	SNI        string `json:"sni"`
 	RemoteAddr string `json:"remoteAddr"`
-	sess       *yamux.Session
 	LocalAddr  string `json:"localAddr"`
-}
-
-func RemoveIndex(s []*Session, index int) []*Session {
-	return append(s[:index], s[index+1:]...)
-}
-
-func peekClientHello(reader io.Reader) (*tls.ClientHelloInfo, io.Reader, error) {
-	peekedBytes := new(bytes.Buffer)
-	hello, err := readClientHello(io.TeeReader(reader, peekedBytes))
-	if err != nil {
-		return nil, nil, err
-	}
-	return hello, io.MultiReader(peekedBytes, reader), nil
-}
-
-type readOnlyConn struct {
-	reader io.Reader
-}
-
-func (conn readOnlyConn) Read(p []byte) (int, error)         { return conn.reader.Read(p) }
-func (conn readOnlyConn) Write(p []byte) (int, error)        { return 0, io.ErrClosedPipe }
-func (conn readOnlyConn) Close() error                       { return nil }
-func (conn readOnlyConn) LocalAddr() net.Addr                { return nil }
-func (conn readOnlyConn) RemoteAddr() net.Addr               { return nil }
-func (conn readOnlyConn) SetDeadline(t time.Time) error      { return nil }
-func (conn readOnlyConn) SetReadDeadline(t time.Time) error  { return nil }
-func (conn readOnlyConn) SetWriteDeadline(t time.Time) error { return nil }
-
-func readClientHello(reader io.Reader) (*tls.ClientHelloInfo, error) {
-	var hello *tls.ClientHelloInfo
-
-	err := tls.Server(readOnlyConn{reader: reader}, &tls.Config{
-		GetConfigForClient: func(argHello *tls.ClientHelloInfo) (*tls.Config, error) {
-			hello = new(tls.ClientHelloInfo)
-			*hello = *argHello
-			return nil, nil
-		},
-	}).Handshake()
-
-	if hello == nil {
-		return nil, err
-	}
-
-	return hello, nil
 }
