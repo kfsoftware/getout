@@ -88,7 +88,6 @@ func (c tunnelClient) startSNIProxy(session *yamux.Session, remoteAddress string
 		destConn, err := net.DialTimeout("tcp", remoteAddress, time.Second*5)
 		if err != nil {
 			log.Trace().Msgf("Failed to connect to remote address: %v", err)
-			conn.Write([]byte("Failed to connect to remote address"))
 			connCloseErr := conn.Close()
 			if connCloseErr != nil {
 				log.Trace().Msgf("Failed to close connection: %v", connCloseErr)
@@ -96,7 +95,7 @@ func (c tunnelClient) startSNIProxy(session *yamux.Session, remoteAddress string
 			if destConn != nil {
 				destConn.Close()
 			}
-			return err
+			continue
 		}
 		log.Debug().Msgf("client %s connected", conn.RemoteAddr().String())
 		copyConn := func(writer, reader net.Conn) {

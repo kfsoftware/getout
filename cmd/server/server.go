@@ -122,8 +122,8 @@ func (c serverCmd) run() error {
 			err = c.returnResponse(initialConn, messages.TunnelStatus_OK)
 			if err != nil {
 				mutex.Unlock()
-				_ = muxListener.Close()
 				delete(sessions, sni)
+				_ = muxListener.Close()
 				log.Trace().Msgf("failed to write message", conn.RemoteAddr().String())
 				err = c.returnResponse(initialConn, messages.TunnelStatus_ERROR)
 				if err != nil {
@@ -134,8 +134,8 @@ func (c serverCmd) run() error {
 			err = initialConn.Close()
 			if err != nil {
 				mutex.Unlock()
-				_ = muxListener.Close()
 				delete(sessions, sni)
+				_ = muxListener.Close()
 				log.Trace().Msgf("failed to close connection", conn.RemoteAddr().String())
 				err = c.returnResponse(initialConn, messages.TunnelStatus_ERROR)
 				if err != nil {
