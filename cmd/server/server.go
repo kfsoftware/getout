@@ -27,8 +27,8 @@ func (c *serverCmd) validate() error {
 }
 
 func (c serverCmd) returnResponse(initialConn net.Conn, status messages.TunnelStatus) error {
-	log.Debug().Msg("Returning response to client")
 	tunnelResponse := &messages.TunnelResponse{Status: status}
+	log.Debug().Msgf("Returning response to client: %s", status)
 	err := messages.WriteMsg(initialConn, tunnelResponse)
 	if err != nil {
 		return err
@@ -185,11 +185,11 @@ func (c serverCmd) run() error {
 					_, err = sess.Ping()
 					if err != nil {
 						log.Warn().Msgf("Session %s inactive, removing it: %v", sni, err)
+						delete(sessions, sni)
 						err = muxListener.Close()
 						if err != nil {
 							log.Err(err).Msg("Close")
 						}
-						delete(sessions, sni)
 						break
 					}
 					time.Sleep(2 * time.Second)
