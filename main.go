@@ -11,7 +11,12 @@ import (
 func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	output := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
-	log.Logger = zerolog.New(output).With().Timestamp().Logger()
+	logLevel := os.Getenv("LOG_LEVEL")
+	zeroLogLevel, err := zerolog.ParseLevel(logLevel)
+	if err != nil {
+		zeroLogLevel = zerolog.InfoLevel
+	}
+	log.Logger = zerolog.New(output).With().Timestamp().Logger().Level(zeroLogLevel)
 	if err := cmd.NewCmdGetOut().Execute(); err != nil {
 		os.Exit(1)
 	}

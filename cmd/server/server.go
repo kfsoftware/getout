@@ -64,14 +64,14 @@ func (c serverCmd) run() error {
 				log.Warn().Msgf("Connection closed")
 				return
 			}
-			log.Debug().Msgf("client %s connected", conn.RemoteAddr().String())
+			log.Trace().Msgf("client %s connected", conn.RemoteAddr().String())
 			sess, err := yamux.Server(conn, nil)
 			if err != nil {
 				panic(err)
 			}
 			initialConn, err := sess.Accept()
 			if err != nil {
-				log.Debug().Msgf("client %s disconnected", conn.RemoteAddr().String())
+				log.Trace().Msgf("client %s disconnected", conn.RemoteAddr().String())
 				if initialConn != nil {
 					err = c.returnResponse(initialConn, messages.TunnelStatus_ERROR)
 					if err != nil {
@@ -83,7 +83,7 @@ func (c serverCmd) run() error {
 			msg := &messages.TunnelRequest{}
 			err = messages.ReadMsgInto(initialConn, msg)
 			if err != nil {
-				log.Debug().Msgf("failed to read message", conn.RemoteAddr().String())
+				log.Trace().Msgf("failed to read message", conn.RemoteAddr().String())
 				err = c.returnResponse(initialConn, messages.TunnelStatus_ERROR)
 				if err != nil {
 					log.Warn().Msgf("Failed to send response: %v", err)
@@ -109,13 +109,13 @@ func (c serverCmd) run() error {
 				RemoteAddr: conn.RemoteAddr().String(),
 				LocalAddr:  muxListener.Addr().String(),
 			}
-			log.Debug().Msgf("request: %v", msg)
+			log.Trace().Msgf("request: %v", msg)
 			msgResponse := messages.TunnelResponse{Status: messages.TunnelStatus_OK}
 			err = messages.WriteMsg(initialConn, &msgResponse)
 			if err != nil {
 				_ = muxListener.Close()
 				delete(sessions, sni)
-				log.Debug().Msgf("failed to write message", conn.RemoteAddr().String())
+				log.Trace().Msgf("failed to write message", conn.RemoteAddr().String())
 				err = c.returnResponse(initialConn, messages.TunnelStatus_ERROR)
 				if err != nil {
 					log.Warn().Msgf("Failed to send response: %v", err)
@@ -126,7 +126,7 @@ func (c serverCmd) run() error {
 			if err != nil {
 				_ = muxListener.Close()
 				delete(sessions, sni)
-				log.Debug().Msgf("failed to close connection", conn.RemoteAddr().String())
+				log.Trace().Msgf("failed to close connection", conn.RemoteAddr().String())
 				err = c.returnResponse(initialConn, messages.TunnelStatus_ERROR)
 				if err != nil {
 					log.Warn().Msgf("Failed to send response: %v", err)
@@ -155,7 +155,7 @@ func (c serverCmd) run() error {
 					var wg sync.WaitGroup
 					wg.Add(2)
 					transfer := func(side string, dst, src net.Conn) {
-						log.Debug().Msgf("proxing %s -> %s", src.RemoteAddr(), dst.RemoteAddr())
+						log.Trace().Msgf("proxing %s -> %s", src.RemoteAddr(), dst.RemoteAddr())
 						tStart := time.Now()
 
 						n, err := io.Copy(dst, src)
@@ -164,31 +164,32 @@ func (c serverCmd) run() error {
 						}
 
 						if err := src.Close(); err != nil {
-							log.Debug().Msgf("%s: close error: %s", side, err)
+							log.Trace().Msgf("%s: close error: %s", side, err)
 						}
 
 						// not for yamux streams, but for client to local server connections
 						if d, ok := dst.(*net.TCPConn); ok {
 							if err := d.CloseWrite(); err != nil {
-								log.Debug().Msgf("%s: closeWrite error: %s", side, err)
+								log.Trace().Msgf("%s: closeWrite error: %s", side, err)
 							}
 						}
 						wg.Done()
-						log.Debug().Msgf("done proxing %s -> %s: %d bytes in %s", src.RemoteAddr(), dst.RemoteAddr(), n, time.Since(tStart))
+						log.Trace().Msgf("done proxing %s -> %s: %d bytes in %s", src.RemoteAddr(), dst.RemoteAddr(), n, time.Since(tStart))
 					}
 					go transfer("remote to local", conn, destConn)
 					go transfer("local to remote", destConn, conn)
 				}
 			}(muxListener)
 			go func() {
+				log.Debug().Msgf("Checking if session is alive")
 				for {
 					_, err = sess.Ping()
 					if err != nil {
-						log.Warn().Msgf("Session %s inactive, removing it: %v", sni, err)
+						log.Info().Msgf("Session %s inactive, removing it: %v", sni, err)
 						delete(sessions, sni)
 						err = muxListener.Close()
 						if err != nil {
-							log.Err(err).Msg("Close")
+							log.Err(err).Msgf("Failed to close listener")
 						}
 						break
 					}
@@ -214,13 +215,13 @@ func (c serverCmd) run() error {
 			conn, err := mux.NextError()
 			switch err.(type) {
 			case vhost.BadRequest:
-				log.Debug().Msgf("got a bad request!")
+				log.Trace().Msgf("got a bad request!")
 			case vhost.NotFound:
-				log.Debug().Msgf("got a connection for an unknown vhost")
+				log.Trace().Msgf("got a connection for an unknown vhost")
 			case vhost.Closed:
-				log.Debug().Msgf("closed conn: %s", err)
+				log.Trace().Msgf("closed conn: %s", err)
 			default:
-				log.Debug().Msgf("Server error")
+				log.Trace().Msgf("Server error")
 			}
 
 			if conn != nil {
