@@ -56,6 +56,8 @@ func (c serverCmd) run() error {
 		_ = muxServer.Close()
 	}(muxServer)
 	sessions := map[string]Session{}
+	var mutex sync.RWMutex // protects multiple tunnels started at the same time
+
 	go func() {
 		log.Info().Msgf("tunnel listening on %s", c.tunnelAddr)
 		for {
@@ -64,13 +66,18 @@ func (c serverCmd) run() error {
 				log.Warn().Msgf("Connection closed")
 				return
 			}
+			mutex.Lock()
+
 			log.Trace().Msgf("client %s connected", conn.RemoteAddr().String())
 			sess, err := yamux.Server(conn, nil)
 			if err != nil {
-				panic(err)
+				log.Err(err).Msg("failed to create yamux session")
+				mutex.Unlock()
+				continue
 			}
 			initialConn, err := sess.Accept()
 			if err != nil {
+				mutex.Unlock()
 				log.Trace().Msgf("client %s disconnected", conn.RemoteAddr().String())
 				if initialConn != nil {
 					err = c.returnResponse(initialConn, messages.TunnelStatus_ERROR)
@@ -83,6 +90,7 @@ func (c serverCmd) run() error {
 			msg := &messages.TunnelRequest{}
 			err = messages.ReadMsgInto(initialConn, msg)
 			if err != nil {
+				mutex.Unlock()
 				log.Trace().Msgf("failed to read message", conn.RemoteAddr().String())
 				err = c.returnResponse(initialConn, messages.TunnelStatus_ERROR)
 				if err != nil {
@@ -92,8 +100,11 @@ func (c serverCmd) run() error {
 			}
 
 			sni := msg.GetTls().GetSni()
+			log.Debug().Msgf("Received request for %v", sni)
 			muxListener, err := mux.Listen(sni)
 			if err != nil {
+				mutex.Unlock()
+				log.Err(err).Msgf("failed to listen on %s", sni)
 				if strings.Contains(strings.ToLower(err.Error()), "already bound") {
 					err = c.returnResponse(initialConn, messages.TunnelStatus_ALREADY_EXISTS)
 					if err != nil {
@@ -101,7 +112,6 @@ func (c serverCmd) run() error {
 					}
 					continue
 				}
-				log.Err(err).Msgf("failed to listen on %s", sni)
 				continue
 			}
 			sessions[sni] = Session{
@@ -109,10 +119,9 @@ func (c serverCmd) run() error {
 				RemoteAddr: conn.RemoteAddr().String(),
 				LocalAddr:  muxListener.Addr().String(),
 			}
-			log.Trace().Msgf("request: %v", msg)
-			msgResponse := messages.TunnelResponse{Status: messages.TunnelStatus_OK}
-			err = messages.WriteMsg(initialConn, &msgResponse)
+			err = c.returnResponse(initialConn, messages.TunnelStatus_OK)
 			if err != nil {
+				mutex.Unlock()
 				_ = muxListener.Close()
 				delete(sessions, sni)
 				log.Trace().Msgf("failed to write message", conn.RemoteAddr().String())
@@ -124,6 +133,7 @@ func (c serverCmd) run() error {
 			}
 			err = initialConn.Close()
 			if err != nil {
+				mutex.Unlock()
 				_ = muxListener.Close()
 				delete(sessions, sni)
 				log.Trace().Msgf("failed to close connection", conn.RemoteAddr().String())
@@ -133,17 +143,24 @@ func (c serverCmd) run() error {
 				}
 				continue
 			}
+			mutex.Unlock()
 			go func(ml net.Listener) {
+				defer func() {
+					delete(sessions, sni)
+					if r := recover(); r != nil {
+						log.Info().Msgf("Recovered in request dispatcher", r)
+					}
+				}()
 				for {
 					conn, err := ml.Accept()
 					if err != nil {
-						_ = muxListener.Close()
+						log.Err(err).Msg("Error accepting connection")
 						delete(sessions, sni)
+						_ = muxListener.Close()
 						if strings.Contains(strings.ToLower(err.Error()), "listener closed") {
 							log.Info().Msg("listener closed")
 							return
 						}
-						log.Err(err).Msg("Error accepting connection")
 						continue
 					}
 					destConn, err := sess.Open()
@@ -181,7 +198,7 @@ func (c serverCmd) run() error {
 				}
 			}(muxListener)
 			go func() {
-				log.Debug().Msgf("Checking if session is alive")
+				log.Debug().Msgf("Checking if session %s is alive", sni)
 				for {
 					_, err = sess.Ping()
 					if err != nil {
