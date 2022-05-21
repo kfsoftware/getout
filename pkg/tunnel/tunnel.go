@@ -8,7 +8,6 @@ import (
 	"github.com/rs/zerolog/log"
 	"io"
 	"net"
-	"sync"
 	"time"
 )
 
@@ -108,8 +107,6 @@ func (c tunnelClient) startSNIProxy(session *yamux.Session, remoteAddress string
 			log.Info().Msgf("Connection finished")
 		}
 		_ = copyConn
-		var wg sync.WaitGroup
-		wg.Add(2)
 
 		transfer := func(side string, dst, src net.Conn) {
 			log.Debug().Msgf("proxing %s -> %s", src.RemoteAddr(), dst.RemoteAddr())
@@ -130,7 +127,6 @@ func (c tunnelClient) startSNIProxy(session *yamux.Session, remoteAddress string
 				}
 
 			}
-			wg.Done()
 			log.Debug().Msgf("done proxing %s -> %s: %d bytes", src.RemoteAddr(), dst.RemoteAddr(), n)
 		}
 
