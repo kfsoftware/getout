@@ -3,7 +3,7 @@ package server
 import (
 	"fmt"
 	"github.com/gin-gonic/gin"
-	"github.com/inconshreveable/go-vhost"
+	"github.com/kfsoftware/go-vhost"
 	"io"
 	"net"
 	"strings"
@@ -76,7 +76,11 @@ func (r *SessionRegistry) delete(sni string) {
 func (r *SessionRegistry) find(sni string) *Session {
 	r.RLock()
 	defer r.RUnlock()
-	return r.sessions[sni]
+	s, ok := r.sessions[sni]
+	if !ok {
+		return nil
+	}
+	return s
 }
 func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) error {
 	c.Lock()
@@ -101,7 +105,22 @@ func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) erro
 		return err
 	}
 	defer initialConn.Close()
-	muxListener, msg, err := c.startMuxListener(mux, initialConn)
+	msg := &messages.TunnelRequest{}
+	err = messages.ReadMsgInto(initialConn, msg)
+	if err != nil {
+		return nil
+	}
+	sni := msg.GetTls().GetSni()
+	s := c.sessionRegistry.find(sni)
+	if s != nil {
+		log.Trace().Msgf("Session already exists in the registry for %s", sni)
+		err = c.returnResponse(initialConn, messages.TunnelStatus_ALREADY_EXISTS)
+		if err != nil {
+			log.Warn().Msgf("Failed to send response: %v", err)
+		}
+		return err
+	}
+	muxListener, err := c.startMuxListener(mux, initialConn, sni)
 	if err != nil {
 		if msg != nil {
 			log.Err(err).Msgf("failed to listen on %s", msg.GetTls().GetSni())
@@ -118,7 +137,6 @@ func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) erro
 		}
 		return err
 	}
-	sni := msg.GetTls().GetSni()
 	session := &Session{
 		SNI:  sni,
 		Conn: conn,
@@ -207,26 +225,25 @@ func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) erro
 	return nil
 }
 
-func (c *serverCmd) startMuxListener(mux *vhost.TLSMuxer, initialConn net.Conn) (net.Listener, *messages.TunnelRequest, error) {
-	msg := &messages.TunnelRequest{}
-	err := messages.ReadMsgInto(initialConn, msg)
-	if err != nil {
-		return nil, nil, err
-	}
-	sni := msg.GetTls().GetSni()
+func (c *serverCmd) startMuxListener(mux *vhost.TLSMuxer, initialConn net.Conn, sni string) (net.Listener, error) {
+
 	log.Debug().Msgf("Received request for %v", sni)
 	muxListener, err := mux.Listen(sni)
 	if err != nil {
 		log.Err(err).Msgf("failed to listen on %s", sni)
 		if strings.Contains(strings.ToLower(err.Error()), "already bound") {
+			err = mux.Del(sni)
+			if err != nil {
+				log.Err(err).Msgf("failed to delete mux %s", sni)
+			}
 			respErr := c.returnResponse(initialConn, messages.TunnelStatus_ALREADY_EXISTS)
 			if respErr != nil {
 				log.Warn().Msgf("Failed to send response: %v", err)
-				return nil, msg, respErr
+				return muxListener, respErr
 			}
-			return nil, msg, err
+			return muxListener, err
 		}
-		return nil, msg, err
+		return muxListener, err
 	}
 	err = c.returnResponse(initialConn, messages.TunnelStatus_OK)
 	if err != nil {
@@ -235,9 +252,9 @@ func (c *serverCmd) startMuxListener(mux *vhost.TLSMuxer, initialConn net.Conn) 
 			log.Warn().Msgf("Failed to send response: %v", err)
 		}
 		c.sessionRegistry.delete(sni)
-		return nil, msg, err
+		return nil, err
 	}
-	return muxListener, msg, nil
+	return muxListener, nil
 }
 
 func (c *serverCmd) run() error {
