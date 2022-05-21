@@ -43,11 +43,36 @@ type SessionRegistry struct {
 	sessions map[string]*Session
 }
 
-func (r *SessionRegistry) store(sni string, s *Session) {
+func (s Session) cleanup() {
+	if s.Conn != nil {
+		s.Conn.Close()
+	}
+	if s.Mux != nil {
+		s.Mux.Close()
+	}
+}
+func (r *SessionRegistry) store(sni string, s *Session) error {
 	r.Lock()
 	defer r.Unlock()
+	_, ok := r.sessions[sni]
+	if ok {
+		log.Warn().Msgf("Session already exists for %s", sni)
+		return fmt.Errorf("session already exists for %s", sni)
+	}
 	r.sessions[sni] = s
+	return nil
 }
+
+func (r *SessionRegistry) delete(sni string) {
+	r.Lock()
+	defer r.Unlock()
+	s, ok := r.sessions[sni]
+	if ok {
+		s.cleanup()
+		delete(r.sessions, sni)
+	}
+}
+
 func (r *SessionRegistry) find(sni string) *Session {
 	r.RLock()
 	defer r.RUnlock()
@@ -91,11 +116,17 @@ func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) erro
 		return err
 	}
 	sni := msg.GetTls().GetSni()
-	c.sessionRegistry.store(sni, &Session{
+	session := &Session{
 		SNI:  sni,
 		Conn: conn,
 		Mux:  muxListener,
-	})
+	}
+	err = c.sessionRegistry.store(sni, session)
+	if err != nil {
+		log.Err(err).Msgf("failed to store session for %s", sni)
+		session.cleanup()
+		return err
+	}
 	err = c.returnResponse(initialConn, messages.TunnelStatus_OK)
 	if err != nil {
 		err = c.returnResponse(initialConn, messages.TunnelStatus_ERROR)
@@ -172,20 +203,7 @@ func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) erro
 	}()
 	return nil
 }
-func (r *SessionRegistry) delete(sni string) {
-	r.Lock()
-	defer r.Unlock()
-	s, ok := r.sessions[sni]
-	if ok {
-		if s.Conn != nil {
-			s.Conn.Close()
-		}
-		if s.Mux != nil {
-			s.Mux.Close()
-		}
-		delete(r.sessions, sni)
-	}
-}
+
 func (c *serverCmd) startMuxListener(mux *vhost.TLSMuxer, initialConn net.Conn) (net.Listener, *messages.TunnelRequest, error) {
 	msg := &messages.TunnelRequest{}
 	err := messages.ReadMsgInto(initialConn, msg)
