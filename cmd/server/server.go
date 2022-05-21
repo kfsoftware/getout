@@ -106,6 +106,9 @@ func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) erro
 		if msg != nil {
 			log.Err(err).Msgf("failed to listen on %s", msg.GetTls().GetSni())
 		}
+		if muxListener != nil {
+			muxListener.Close()
+		}
 		if strings.Contains(strings.ToLower(err.Error()), "already bound") {
 			err = c.returnResponse(initialConn, messages.TunnelStatus_ALREADY_EXISTS)
 			if err != nil {
