@@ -17,7 +17,6 @@ import (
 )
 
 type serverCmd struct {
-	sync.RWMutex
 	tunnelAddr      string
 	adminAddr       string
 	addr            string
@@ -46,6 +45,9 @@ type SessionRegistry struct {
 func (s Session) cleanup() {
 	if s.Conn != nil {
 		s.Conn.Close()
+	}
+	if s.Sess != nil {
+		s.Sess.Close()
 	}
 	if s.Mux != nil {
 		s.Mux.Close()
@@ -83,14 +85,11 @@ func (r *SessionRegistry) find(sni string) *Session {
 	return s
 }
 func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) error {
-	c.Lock()
-	defer c.Unlock()
 	log.Trace().Msgf("client %s connected", conn.RemoteAddr().String())
 	config := yamux.DefaultConfig()
 	sess, err := yamux.Server(conn, config)
 	if err != nil {
 		log.Err(err).Msg("failed to create yamux session")
-		c.Unlock()
 		return err
 	}
 	initialConn, err := sess.Accept()
@@ -141,6 +140,7 @@ func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) erro
 		SNI:  sni,
 		Conn: conn,
 		Mux:  muxListener,
+		Sess: sess,
 	}
 	err = c.sessionRegistry.store(sni, session)
 	if err != nil {
@@ -274,16 +274,23 @@ func (c *serverCmd) run() error {
 		panic(fmt.Errorf("error listening on %s: %w", c.tunnelAddr, err))
 	}
 	defer func(muxServer net.Listener) {
+		log.Warn().Msgf("Closing mux server %s", muxServer.Addr())
 		_ = muxServer.Close()
 	}(muxServer)
 	go func() {
 		log.Info().Msgf("tunnel listening on %s", c.tunnelAddr)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Info().Msgf("tunnel listener closed", r)
+			}
+		}()
 		for {
 			conn, err := muxServer.Accept()
 			if err != nil {
 				log.Warn().Msgf("Connection closed")
 				return
 			}
+			log.Trace().Msgf("Accepted connection from %s", conn.RemoteAddr())
 			err = c.handleTunnelRequest(mux, conn)
 			if err != nil {
 				log.Warn().Msgf("Failed to handle tunnel request: %v", err)
@@ -354,4 +361,5 @@ type Session struct {
 	//LocalAddr  string `json:"localAddr"`
 	Conn net.Conn
 	Mux  net.Listener
+	Sess *yamux.Session
 }
