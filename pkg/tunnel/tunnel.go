@@ -28,7 +28,8 @@ func (c *tunnelClient) StartTlsTunnel(sni string, remoteAddress string) error {
 		log.Trace().Msgf("Failed to connect to tunnel: %v", err)
 		return err
 	}
-	session, err := yamux.Client(conn, nil)
+	cfg := yamux.DefaultConfig()
+	session, err := yamux.Client(conn, cfg)
 	if err != nil {
 		log.Trace().Msgf("Failed to create yamux session: %v", err)
 		return err

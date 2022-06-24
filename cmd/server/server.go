@@ -112,6 +112,8 @@ func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) erro
 	sni := msg.GetTls().GetSni()
 	s := c.sessionRegistry.find(sni)
 	if s != nil {
+		defer conn.Close()
+		defer sess.Close()
 		log.Trace().Msgf("Session already exists in the registry for %s", sni)
 		err = c.returnResponse(initialConn, messages.TunnelStatus_ALREADY_EXISTS)
 		if err != nil {
@@ -127,6 +129,8 @@ func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) erro
 		if muxListener != nil {
 			muxListener.Close()
 		}
+		defer conn.Close()
+		defer sess.Close()
 		if strings.Contains(strings.ToLower(err.Error()), "already bound") {
 			err = c.returnResponse(initialConn, messages.TunnelStatus_ALREADY_EXISTS)
 			if err != nil {
@@ -300,6 +304,10 @@ func (c *serverCmd) run() error {
 	go func() {
 		r := gin.Default()
 		r.GET("/tunnels", func(c1 *gin.Context) {
+			c1.JSON(200, c.sessionRegistry.sessions)
+		})
+		r.DELETE("/tunnels/:sni", func(c1 *gin.Context) {
+			c.sessionRegistry.delete(c1.Param("sni"))
 			c1.JSON(200, c.sessionRegistry.sessions)
 		})
 		log.Info().Msgf("admin server listening on %s", c.adminAddr)
