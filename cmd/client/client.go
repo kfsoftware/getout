@@ -2,10 +2,11 @@ package client
 
 import (
 	"fmt"
+	"time"
+
 	"github.com/kfsoftware/getout/pkg/tunnel"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
-	"time"
 )
 
 type clientCmd struct {
@@ -31,6 +32,7 @@ func (c *clientCmd) startTunnel() error {
 }
 func (c *clientCmd) run() error {
 	for {
+		log.Info().Msgf("Connecting to %s:%d", c.host, c.port)
 		err := c.startTunnel()
 		if err != nil {
 			log.Error().Msgf("Failed to start tunnel: %v retrying in %v", err, 5*time.Second)

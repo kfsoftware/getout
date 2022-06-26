@@ -165,7 +165,7 @@ func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) erro
 		defer func() {
 			c.sessionRegistry.delete(sni)
 			if r := recover(); r != nil {
-				log.Info().Msgf("Recovered in request dispatcher", r)
+				log.Info().Msgf("Recovered in request dispatcher %v", r)
 			}
 		}()
 		for {
@@ -285,7 +285,7 @@ func (c *serverCmd) run() error {
 		log.Info().Msgf("tunnel listening on %s", c.tunnelAddr)
 		defer func() {
 			if r := recover(); r != nil {
-				log.Info().Msgf("tunnel listener closed", r)
+				log.Info().Msgf("tunnel listener closed %v", r)
 			}
 		}()
 		for {
