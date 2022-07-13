@@ -87,20 +87,18 @@ func (r *SessionRegistry) find(sni string) *Session {
 func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) error {
 	log.Trace().Msgf("client %s connected", conn.RemoteAddr().String())
 	config := yamux.DefaultConfig()
+	// setup session
 	sess, err := yamux.Server(conn, config)
 	if err != nil {
 		log.Err(err).Msg("failed to create yamux session")
 		return err
 	}
+	// accept connection
 	initialConn, err := sess.Accept()
 	if err != nil {
+		defer sess.Close()
 		log.Trace().Msgf("client %s disconnected", conn.RemoteAddr().String())
-		if initialConn != nil {
-			err = c.returnResponse(initialConn, messages.TunnelStatus_ERROR)
-			if err != nil {
-				log.Warn().Msgf("Failed to send response: %v", err)
-			}
-		}
+		log.Error().Msgf("multiplex conn accept failed %v", err)
 		return err
 	}
 	defer initialConn.Close()
@@ -230,7 +228,6 @@ func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) erro
 }
 
 func (c *serverCmd) startMuxListener(mux *vhost.TLSMuxer, initialConn net.Conn, sni string) (net.Listener, error) {
-
 	log.Debug().Msgf("Received request for %v", sni)
 	muxListener, err := mux.Listen(sni)
 	if err != nil {
@@ -300,6 +297,7 @@ func (c *serverCmd) run() error {
 				log.Warn().Msgf("Failed to handle tunnel request: %v", err)
 			}
 		}
+		log.Info().Msg("tunnel server closed")
 	}()
 	go func() {
 		r := gin.Default()
