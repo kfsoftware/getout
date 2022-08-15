@@ -201,6 +201,9 @@ func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) erro
 					if err := d.CloseWrite(); err != nil {
 						log.Trace().Msgf("%s: closeWrite error: %s", side, err)
 					}
+					if err := d.CloseRead(); err != nil {
+						log.Trace().Msgf("%s: closeRead error: %s", side, err)
+					}
 				}
 				log.Trace().Msgf("done proxing %s -> %s: %d bytes in %s", src.RemoteAddr(), dst.RemoteAddr(), n, time.Since(tStart))
 			}
