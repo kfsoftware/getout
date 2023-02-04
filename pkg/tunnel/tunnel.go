@@ -1,12 +1,11 @@
 package tunnel
 
 import (
-	"fmt"
 	"github.com/hashicorp/yamux"
 	"github.com/kfsoftware/getout/pkg/messages"
+	"github.com/kfsoftware/getout/proxy"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
-	"io"
 	"net"
 	"time"
 )
@@ -97,41 +96,10 @@ func (c tunnelClient) startSNIProxy(session *yamux.Session, remoteAddress string
 			}
 			continue
 		}
-		log.Debug().Msgf("client %s connected", conn.RemoteAddr().String())
-		copyConn := func(writer, reader net.Conn) {
-			defer writer.Close()
-			defer reader.Close()
-			_, err := io.Copy(writer, reader)
-			if err != nil {
-				fmt.Printf("io.Copy error: %s", err)
-			}
-			log.Info().Msgf("Connection finished")
-		}
-		_ = copyConn
-
-		transfer := func(side string, dst, src net.Conn) {
-			log.Debug().Msgf("proxing %s -> %s", src.RemoteAddr(), dst.RemoteAddr())
-
-			n, err := io.Copy(dst, src)
-			if err != nil {
-				log.Error().Msgf("%s: copy error: %s", side, err)
-			}
-
-			if err := src.Close(); err != nil {
-				log.Debug().Msgf("%s: close error: %s", side, err)
-			}
-
-			// not for yamux streams, but for client to local server connections
-			if d, ok := dst.(*net.TCPConn); ok {
-				if err := d.CloseWrite(); err != nil {
-					log.Debug().Msgf("%s: closeWrite error: %s", side, err)
-				}
-
-			}
-			log.Debug().Msgf("done proxing %s -> %s: %d bytes", src.RemoteAddr(), dst.RemoteAddr(), n)
-		}
-
-		go transfer("remote to local", conn, destConn)
-		go transfer("local to remote", destConn, conn)
+		p := proxy.New(
+			conn,
+			destConn,
+		)
+		p.Start()
 	}
 }
