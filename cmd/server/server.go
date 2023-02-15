@@ -44,6 +44,8 @@ type SessionRegistry struct {
 }
 
 func (s *Session) cleanup() {
+	s.Lock()
+	defer s.Unlock()
 	defer func() {
 		s.cleanupDone = true
 	}()
@@ -341,6 +343,7 @@ func NewServerCmd() *cobra.Command {
 }
 
 type Session struct {
+	sync.RWMutex
 	cleanupDone bool
 	SNI         string `json:"sni"`
 	//RemoteAddr string `json:"remoteAddr"`
