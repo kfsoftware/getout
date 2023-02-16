@@ -155,7 +155,6 @@ func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) erro
 		Sess: sess,
 	}
 	defer func() {
-		session.cleanup()
 		c.sessionRegistry.delete(sni)
 	}()
 	err = c.sessionRegistry.store(sni, session)
@@ -177,7 +176,6 @@ func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) erro
 			_, err = sess.Ping()
 			if err != nil {
 				log.Infof("Session %s inactive, removing it: %v", sni, err)
-				c.sessionRegistry.delete(sni)
 				break
 			}
 			time.Sleep(2 * time.Second)
