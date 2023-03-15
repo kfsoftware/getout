@@ -188,7 +188,7 @@ func (c *serverCmd) handleTunnelRequest(mux *vhost.TLSMuxer, conn net.Conn) erro
 	for {
 		conn, err := muxListener.Accept()
 		if err != nil {
-			log.Errorf("Error accepting connection", err)
+			log.Errorf("Error accepting connection: %v", err)
 			if strings.Contains(strings.ToLower(err.Error()), "listener closed") {
 				log.Info("listener closed")
 				return errors.New("listener closed")
